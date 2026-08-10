@@ -1,9 +1,10 @@
 // mcp.js
-// An MCP server exposing your live Schwab options chain as tools, so Claude can
-// pull the chain itself instead of you pasting it in. Add the URL as a custom
-// connector in claude.ai and it runs under your subscription, not API billing.
+// An MCP server exposing your live Schwab market data — options chains and price
+// history — as tools, so Claude can pull the numbers itself instead of you
+// pasting them in. Add the URL as a custom connector in claude.ai and it runs
+// under your subscription, not API billing.
 //
-// Served at:  https://YOUR-SITE.netlify.app/mcp?key=YOUR_SECRET
+// Served at:  https://YOUR-SITE.netlify.app/mcp/YOUR_SECRET
 //
 // Required environment variables (in addition to the SCHWAB_* ones):
 //   MCP_SHARED_SECRET - any long random string you make up. Without it this
@@ -23,10 +24,18 @@ const { z } = require('zod');
 const { getValidAccessToken } = require('./schwab-token-manager');
 
 const DEFAULT_WINDOW = 12;
+const DEFAULT_MAX_CANDLES = 300;
+const DEFAULT_RANGE = '1y';
 
-async function fetchChain(symbol) {
+// The longest moving average served. A range only just long enough to hold it
+// (a year is ~252 trading days) would leave it null or resting on two or three
+// bars, so the fetch is widened to cover it — see widenForAverages below.
+const LONGEST_AVERAGE = 250;
+
+async function schwabGet(path, params) {
   const accessToken = await getValidAccessToken();
-  const url = `https://api.schwabapi.com/marketdata/v1/chains?symbol=${encodeURIComponent(symbol)}`;
+  const query = new URLSearchParams(params).toString();
+  const url = `https://api.schwabapi.com/marketdata/v1/${path}?${query}`;
   const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
 
   if (!res.ok) {
@@ -34,6 +43,8 @@ async function fetchChain(symbol) {
   }
   return res.json();
 }
+
+const fetchChain = (symbol) => schwabGet('chains', { symbol });
 
 function textResult(payload) {
   return { content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }] };
@@ -47,6 +58,197 @@ function errorResult(message) {
 function parseExp(key) {
   const [date, dte] = key.split(':');
   return { key, date, daysToExpiration: Number(dte) };
+}
+
+// Schwab's price history takes four interlocking parameters (periodType, period,
+// frequencyType, frequency) with combinations that are illegal in ways the docs
+// only imply. These two tables collapse that into one range plus one interval,
+// so a model cannot ask for something the API will reject.
+const RANGES = {
+  '1d': { periodType: 'day', period: 1 },
+  '2d': { periodType: 'day', period: 2 },
+  '3d': { periodType: 'day', period: 3 },
+  '5d': { periodType: 'day', period: 5 },
+  '10d': { periodType: 'day', period: 10 },
+  '1m': { periodType: 'month', period: 1 },
+  '2m': { periodType: 'month', period: 2 },
+  '3m': { periodType: 'month', period: 3 },
+  '6m': { periodType: 'month', period: 6 },
+  ytd: { periodType: 'ytd', period: 1 },
+  '1y': { periodType: 'year', period: 1 },
+  '2y': { periodType: 'year', period: 2 },
+  '3y': { periodType: 'year', period: 3 },
+  '5y': { periodType: 'year', period: 5 },
+  '10y': { periodType: 'year', period: 10 },
+};
+
+const INTERVALS = {
+  '1min': { frequencyType: 'minute', frequency: 1 },
+  '5min': { frequencyType: 'minute', frequency: 5 },
+  '10min': { frequencyType: 'minute', frequency: 10 },
+  '15min': { frequencyType: 'minute', frequency: 15 },
+  '30min': { frequencyType: 'minute', frequency: 30 },
+  daily: { frequencyType: 'daily', frequency: 1 },
+  weekly: { frequencyType: 'weekly', frequency: 1 },
+  monthly: { frequencyType: 'monthly', frequency: 1 },
+};
+
+// Which frequencyTypes each periodType actually accepts.
+const LEGAL = {
+  day: ['minute'],
+  month: ['daily', 'weekly'],
+  year: ['daily', 'weekly', 'monthly'],
+  ytd: ['daily', 'weekly'],
+};
+
+// Daily candles everywhere except a range measured in days, where Schwab only
+// serves minute bars anyway.
+function defaultInterval(periodType) {
+  return periodType === 'day' ? '5min' : 'daily';
+}
+
+// Roughly how many daily bars a range holds — 252 trading days a year, 21 a
+// month. Only used to decide whether to reach back further, so an estimate is
+// enough; the window that gets reported is cut by date, not by this.
+function approxDailyBars(periodType, period) {
+  if (periodType === 'year') return period * 252;
+  if (periodType === 'ytd') return 252;
+  if (periodType === 'month') return period * 21;
+  return period;
+}
+
+// Where the range the caller asked for begins, measured back from the last
+// candle. Day-length ranges count sessions instead, since counting calendar
+// days there would swallow weekends.
+function windowStart(periodType, period, lastMs) {
+  const d = new Date(lastMs);
+  if (periodType === 'month') {
+    d.setUTCMonth(d.getUTCMonth() - period);
+    return d.getTime();
+  }
+  if (periodType === 'year') {
+    d.setUTCFullYear(d.getUTCFullYear() - period);
+    return d.getTime();
+  }
+  if (periodType === 'ytd') return Date.UTC(d.getUTCFullYear(), 0, 1);
+  return null;
+}
+
+const NY_DAY = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'America/New_York',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+const NY_MINUTE = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'America/New_York',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23',
+});
+
+// Schwab stamps candles in epoch milliseconds. Market questions are asked in
+// exchange time, so render them in New York rather than UTC.
+function stamp(ms, intraday) {
+  const d = new Date(ms);
+  return intraday ? NY_MINUTE.format(d).replace(', ', ' ') : NY_DAY.format(d);
+}
+
+const round = (v, digits = 2) =>
+  v === null || v === undefined || !isFinite(v) ? null : Number(v.toFixed(digits));
+
+function sma(values, n) {
+  if (values.length < n) return null;
+  let sum = 0;
+  for (let i = values.length - n; i < values.length; i++) sum += values[i];
+  return sum / n;
+}
+
+function ema(values, n) {
+  if (values.length < n) return null;
+  const k = 2 / (n + 1);
+  let e = 0;
+  for (let i = 0; i < n; i++) e += values[i];
+  e /= n;
+  for (let i = n; i < values.length; i++) e = values[i] * k + e * (1 - k);
+  return e;
+}
+
+// Wilder's RSI — the smoothing everyone's charts use, not a plain average.
+function rsi(closes, n = 14) {
+  if (closes.length < n + 1) return null;
+  let gain = 0;
+  let loss = 0;
+  for (let i = 1; i <= n; i++) {
+    const change = closes[i] - closes[i - 1];
+    if (change >= 0) gain += change;
+    else loss -= change;
+  }
+  gain /= n;
+  loss /= n;
+  for (let i = n + 1; i < closes.length; i++) {
+    const change = closes[i] - closes[i - 1];
+    gain = (gain * (n - 1) + Math.max(change, 0)) / n;
+    loss = (loss * (n - 1) + Math.max(-change, 0)) / n;
+  }
+  if (loss === 0) return 100;
+  return 100 - 100 / (1 + gain / loss);
+}
+
+function atr(candles, n = 14) {
+  if (candles.length < n + 1) return null;
+  const ranges = [];
+  for (let i = 1; i < candles.length; i++) {
+    const c = candles[i];
+    const prev = candles[i - 1].close;
+    ranges.push(Math.max(c.high - c.low, Math.abs(c.high - prev), Math.abs(c.low - prev)));
+  }
+  let a = 0;
+  for (let i = 0; i < n; i++) a += ranges[i];
+  a /= n;
+  for (let i = n; i < ranges.length; i++) a = (a * (n - 1) + ranges[i]) / n;
+  return a;
+}
+
+// Computed here rather than left to the model: these are cheap for a CPU and
+// error-prone as mental arithmetic over hundreds of closes.
+//
+// Two series go in, and the distinction matters. Moving averages run over
+// everything fetched, because a 250-day average needs 250 days of lookback
+// whatever range was asked for. High, low and change run over `window` — the
+// range actually asked for — so a question about the 52-week high gets the
+// 52-week high rather than whatever the extra lookback happened to contain.
+function indicators(full, window) {
+  const closes = full.map((c) => c.close);
+  const volumes = full.map((c) => c.volume);
+  const ema12 = ema(closes, 12);
+  const ema26 = ema(closes, 26);
+  const macdLine = ema12 !== null && ema26 !== null ? ema12 - ema26 : null;
+  const last = closes[closes.length - 1];
+  const windowOpen = window[0].close;
+
+  return {
+    lastClose: round(last),
+    changeOverRange: round(last - windowOpen),
+    changePercentOverRange: round(((last - windowOpen) / windowOpen) * 100),
+    sma20: round(sma(closes, 20)),
+    sma50: round(sma(closes, 50)),
+    sma100: round(sma(closes, 100)),
+    sma200: round(sma(closes, 200)),
+    sma250: round(sma(closes, 250)),
+    ema9: round(ema(closes, 9)),
+    ema21: round(ema(closes, 21)),
+    macd: round(macdLine, 3),
+    rsi14: round(rsi(closes, 14), 1),
+    atr14: round(atr(full, 14), 3),
+    rangeHigh: round(Math.max(...window.map((c) => c.high))),
+    rangeLow: round(Math.min(...window.map((c) => c.low))),
+    avgVolume20: volumes.length >= 20 ? Math.round(sma(volumes, 20)) : null,
+    lastVolume: volumes[volumes.length - 1],
+  };
 }
 
 function buildServer() {
@@ -207,6 +409,169 @@ function buildServer() {
           );
         }
         return errorResult(`Could not fetch the chain: ${err.message}`);
+      }
+    }
+  );
+
+  server.registerTool(
+    'get_price_history',
+    {
+      title: 'Get price history candles',
+      description:
+        'Get OHLCV candles for a stock symbol, plus precomputed indicators (SMA 20/50/100/200/250, ' +
+        'EMA 9/21, MACD line, RSI 14, ATR 14, range high/low, average volume). Call this for any ' +
+        'charting, trend, candlestick-pattern, support/resistance, momentum or moving-average question — ' +
+        'the data is live and cannot be answered from memory. Use the returned indicators rather than ' +
+        'recomputing them by hand. Intraday intervals only work with a range in days.',
+      inputSchema: {
+        symbol: z.string().describe('Stock ticker, e.g. NVDA'),
+        range: z
+          .enum(Object.keys(RANGES))
+          .optional()
+          .describe(`How far back to look. Defaults to ${DEFAULT_RANGE}.`),
+        interval: z
+          .enum(Object.keys(INTERVALS))
+          .optional()
+          .describe(
+            'Candle size. Minute intervals require a range of 1d-10d; daily and weekly work with any ' +
+              'range; monthly only with years. Defaults to a sensible size for the range.'
+          ),
+        extendedHours: z
+          .boolean()
+          .optional()
+          .describe('Include pre/post-market candles on intraday ranges. Defaults to false.'),
+        maxCandles: z
+          .number()
+          .int()
+          .min(10)
+          .max(1200)
+          .optional()
+          .describe(
+            `Cap on candles listed, keeping the most recent. Defaults to ${DEFAULT_MAX_CANDLES}; raise ` +
+              'it to read a long daily range bar by bar. Indicators never depend on this — they are ' +
+              'computed over the full series regardless.'
+          ),
+      },
+    },
+    async ({ symbol, range, interval, extendedHours, maxCandles }) => {
+      try {
+        const ticker = symbol.toUpperCase();
+        const rangeKey = range || DEFAULT_RANGE;
+        const asked = RANGES[rangeKey];
+        const intervalKey = interval || defaultInterval(asked.periodType);
+        const { frequencyType, frequency } = INTERVALS[intervalKey];
+
+        // What actually gets requested from Schwab, which may reach back
+        // further than the caller asked for. The reported window is cut back
+        // down afterwards.
+        let { periodType, period } = asked;
+
+        // "The last five days, daily candles" is an ordinary request that Schwab
+        // has no parameters for — a day-range only serves minute bars. Pull a
+        // month of daily bars instead and keep the last N sessions, rather than
+        // refusing something the caller can reasonably expect to work.
+        let sessionCap = null;
+        if (periodType === 'day' && frequencyType !== 'minute') {
+          sessionCap = period;
+          periodType = 'month';
+          period = 1;
+        }
+
+        // A 250-day average over a one-year range would rest on a couple of
+        // bars, or fall out entirely on a short trading year. Reach back far
+        // enough to seed the long averages properly; only the candles inside
+        // the requested range are reported.
+        if (frequencyType === 'daily' && approxDailyBars(periodType, period) < LONGEST_AVERAGE + 20) {
+          periodType = 'year';
+          period = 2;
+        }
+
+        if (!LEGAL[periodType].includes(frequencyType)) {
+          const usable = Object.keys(INTERVALS).filter((k) =>
+            LEGAL[periodType].includes(INTERVALS[k].frequencyType)
+          );
+          return errorResult(
+            `Schwab does not serve ${intervalKey} candles over a ${rangeKey} range. ` +
+              `Valid intervals for ${rangeKey}: ${usable.join(', ')}.`
+          );
+        }
+
+        const data = await schwabGet('pricehistory', {
+          symbol: ticker,
+          periodType,
+          period,
+          frequencyType,
+          frequency,
+          needExtendedHoursData: extendedHours ? 'true' : 'false',
+          needPreviousClose: 'true',
+        });
+
+        const candles = data.candles || [];
+        if (!candles.length) {
+          return errorResult(
+            `No candles returned for ${ticker} over ${rangeKey}. Check the symbol, or note that ` +
+              'Schwab only keeps intraday history for roughly the last several weeks.'
+          );
+        }
+
+        // The candles inside the range that was actually asked for. Sessions
+        // are counted for day-length ranges and cut by date for the rest.
+        const cutoff = windowStart(asked.periodType, asked.period, candles[candles.length - 1].datetime);
+        const window = sessionCap
+          ? candles.slice(-sessionCap)
+          : cutoff
+            ? candles.filter((c) => c.datetime >= cutoff)
+            : candles;
+        const inRange = window.length ? window : candles;
+
+        // Moving averages read the whole series so the long ones are properly
+        // seeded; highs, lows and the change read only the requested range.
+        const stats = indicators(candles, inRange);
+        const intraday = frequencyType === 'minute';
+        const shown = inRange.slice(-(maxCandles || DEFAULT_MAX_CANDLES));
+        const reachedBack = candles.length > inRange.length;
+
+        return textResult({
+          symbol: ticker,
+          range: rangeKey,
+          interval: intervalKey,
+          extendedHours: Boolean(extendedHours),
+          previousClose: data.previousClose,
+          candlesInRange: inRange.length,
+          candlesListed: shown.length,
+          candlesFetched: candles.length,
+          indicators: stats,
+          indicatorNote: [
+            `Moving averages, RSI and ATR are computed over all ${candles.length} ${intervalKey} candles fetched.`,
+            reachedBack
+              ? `That deliberately reaches back past the ${rangeKey} asked for, so the long averages are ` +
+                `properly seeded; rangeHigh, rangeLow and the change cover the ${rangeKey} itself.`
+              : null,
+            shown.length < inRange.length
+              ? `Only the most recent ${shown.length} of ${inRange.length} candles in range are listed; ` +
+                'raise maxCandles to see the rest.'
+              : null,
+            'Prices are live from Schwab and may be delayed or stale outside market hours.',
+          ]
+            .filter(Boolean)
+            .join(' '),
+          columns: ['time', 'open', 'high', 'low', 'close', 'volume'],
+          candles: shown.map((c) => [
+            stamp(c.datetime, intraday),
+            round(c.open),
+            round(c.high),
+            round(c.low),
+            round(c.close),
+            c.volume,
+          ]),
+        });
+      } catch (err) {
+        if (err.message && err.message.startsWith('REAUTH_REQUIRED')) {
+          return errorResult(
+            'The Schwab login has expired. Visit /.netlify/functions/schwab-auth-start on the site to reconnect, then try again.'
+          );
+        }
+        return errorResult(`Could not fetch price history: ${err.message}`);
       }
     }
   );

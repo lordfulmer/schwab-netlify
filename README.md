@@ -70,15 +70,55 @@ If the connector asks you to sign in and the sign-in fails, the URL is wrong —
 the server uses no OAuth, so Claude should never prompt for a login.
 
 Then just ask, in any conversation: *"What's the best NVDA strike expiring this
-week?"* Claude calls the connector, pulls the live chain, and reasons over the
-actual numbers.
+week?"* or *"Is NVDA overbought? Show me the daily chart for the last 6 months."*
+Claude calls the connector, pulls the live data, and reasons over the actual
+numbers.
 
-Two tools are exposed:
+Three tools are exposed:
 
 | Tool | What it does |
 |---|---|
 | `list_expirations` | Expiration dates for a symbol, with days to expiry and strike counts |
 | `get_options_chain` | Strikes around the money for one expiration — bid, ask, last, delta, gamma, theta, vega, IV, open interest, volume, both sides |
+| `get_price_history` | OHLCV candles plus SMA 20/50/100/200/250, EMA 9/21, MACD, RSI 14, ATR 14, range high/low and average volume |
+
+### Price history ranges and intervals
+
+`get_price_history` takes one `range` and one `interval`. Schwab won't serve
+every pairing, so the tool rejects impossible ones up front with the list of
+intervals that do work:
+
+| Range | Intervals allowed |
+|---|---|
+| `1d` `2d` `3d` `5d` `10d` | `1min` `5min` `10min` `15min` `30min` `daily` `weekly` |
+| `1m` `2m` `3m` `6m` `ytd` | `daily` `weekly` |
+| `1y` `2y` `3y` `5y` `10y` | `daily` `weekly` `monthly` |
+
+Both are optional — the default is one year of daily candles. Schwab only keeps
+intraday history for roughly the last several weeks, so minute candles from
+months ago come back empty.
+
+Schwab itself won't serve daily candles over a range measured in days, so asking
+for `5d` + `daily` gets a month of daily bars trimmed to the last five sessions.
+
+### How the indicator window works
+
+Indicators are computed on the server, not by Claude — a 250-day average is
+cheap for a CPU and error-prone as mental arithmetic over hundreds of closes.
+
+Two different spans feed them, which is what makes the long averages usable:
+
+- **Moving averages, RSI and ATR** read the *whole* series fetched. A one-year
+  range is only ~252 trading days, so a 250-day average over it would rest on a
+  couple of bars — or vanish entirely in a short trading year. Ranges too short
+  to seed the long averages quietly fetch two years and use the extra as
+  lookback.
+- **`rangeHigh`, `rangeLow` and the change** read only the range you asked for.
+  So "where's the 52-week high?" on a `1y` range gets the 52-week high, not
+  whatever the extra lookback happened to contain.
+
+The response spells out which is which, and `maxCandles` only limits how many
+rows get *listed* — it never changes a computed number.
 
 Treat the secret like a password: anyone holding that URL can pull chains
 against your Schwab connection.
