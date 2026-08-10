@@ -3,3 +3,10 @@
 
 [functions]
   node_bundler = "esbuild"
+
+# Give the MCP server a clean URL to hand to Claude's connector settings.
+[[redirects]]
+  from = "/mcp"
+  to = "/.netlify/functions/mcp"
+  status = 200
+  force = true
