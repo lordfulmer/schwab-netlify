@@ -18,6 +18,8 @@
     --put-dim: rgba(248, 113, 113, 0.08);
     --put-itm: rgba(248, 113, 113, 0.14);
     --atm: #f5c451;
+    --pick: #60a5fa;
+    --pick-bg: rgba(96, 165, 250, 0.16);
     --mono: 'SF Mono', 'IBM Plex Mono', Menlo, Consolas, monospace;
     --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   }
@@ -211,8 +213,171 @@
   tr.call-itm .call-cell { background: var(--call-itm); }
   tr.put-itm .put-cell { background: var(--put-itm); }
   .bid { color: var(--dim); }
+  .ask { color: var(--dim); }
   .last { color: var(--text); font-weight: 600; }
   .greek { color: var(--dim); font-size: 11px; }
+  tr.ai-pick .strike-cell {
+    box-shadow: inset 0 0 0 1px var(--pick);
+  }
+  tr.ai-pick .pick-side {
+    background: var(--pick-bg) !important;
+    box-shadow: inset 0 1px 0 var(--pick), inset 0 -1px 0 var(--pick);
+  }
+  .pick-tag {
+    display: inline-block;
+    font-size: 9px;
+    font-family: var(--sans);
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    color: var(--bg);
+    background: var(--pick);
+    border-radius: 3px;
+    padding: 1px 4px;
+    margin-left: 5px;
+    vertical-align: middle;
+  }
+  .analysis {
+    max-width: 1100px;
+    margin: 18px auto 0;
+  }
+  .analyze-bar {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-bottom: 14px;
+  }
+  .thesis-input {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 13px;
+    padding: 9px 12px;
+    border-radius: 8px;
+    flex: 1;
+    min-width: 240px;
+  }
+  .thesis-input:focus { outline: 1px solid var(--dim); }
+  .analyze-btn {
+    background: var(--pick);
+    color: var(--bg);
+    border: none;
+    padding: 10px 18px;
+    border-radius: 8px;
+    font-weight: 700;
+    font-size: 13px;
+    cursor: pointer;
+    font-family: var(--sans);
+    white-space: nowrap;
+  }
+  .analyze-btn:hover { filter: brightness(1.1); }
+  .analyze-btn:disabled { opacity: 0.5; cursor: default; filter: none; }
+  .analysis-card {
+    display: none;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 20px 22px;
+  }
+  .analysis-card.visible { display: block; }
+  .mark-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 12px;
+    font-size: 12.5px;
+    color: var(--dim);
+  }
+  .mark-input {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 700;
+    padding: 7px 10px;
+    border-radius: 7px;
+    width: 90px;
+    text-transform: uppercase;
+  }
+  .mark-input:focus { outline: 1px solid var(--pick); }
+  .ghost-btn {
+    background: transparent;
+    border: 1px solid var(--line);
+    color: var(--dim);
+    padding: 7px 12px;
+    border-radius: 7px;
+    font-size: 12.5px;
+    font-weight: 600;
+    cursor: pointer;
+    font-family: var(--sans);
+  }
+  .ghost-btn:hover { border-color: var(--dim); color: var(--text); }
+  .prompt-dump {
+    width: 100%;
+    height: 200px;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 11px;
+    line-height: 1.5;
+    padding: 12px;
+    resize: vertical;
+  }
+  .analysis-card code {
+    font-family: var(--mono);
+    font-size: 12px;
+    background: rgba(255,255,255,0.06);
+    border-radius: 4px;
+    padding: 1px 5px;
+  }
+  .pick-header {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 14px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--line);
+  }
+  .pick-contract {
+    font-family: var(--mono);
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--pick);
+  }
+  .pick-conf {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--dim);
+  }
+  .analysis-card h4 {
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--dim);
+    margin: 16px 0 6px;
+  }
+  .analysis-card h4:first-of-type { margin-top: 0; }
+  .analysis-card p {
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.6;
+    color: var(--text);
+  }
+  .disclaimer {
+    margin-top: 18px;
+    padding-top: 14px;
+    border-top: 1px solid var(--line);
+    font-size: 11.5px;
+    line-height: 1.5;
+    color: var(--dim);
+  }
   .empty, .loading {
     text-align: center;
     padding: 60px 20px;
@@ -271,10 +436,27 @@
     <div class="loading" id="statusMsg">Enter a symbol and hit Load Chain.</div>
   </div>
 
+  <div class="analysis">
+    <div class="analyze-bar">
+      <input class="thesis-input" id="thesisInput" placeholder="Your thesis, optional — e.g. bullish into earnings, or selling premium">
+      <button class="analyze-btn" id="copyBtn" onclick="copyForClaude()">Copy for Claude</button>
+    </div>
+    <div class="analysis-card" id="analysisCard"></div>
+    <div class="mark-bar">
+      <label for="markInput">Mark the strike Claude picked:</label>
+      <input class="mark-input" id="markInput" placeholder="220C" maxlength="12"
+             onkeydown="if (event.key === 'Enter') markPick()">
+      <button class="ghost-btn" onclick="markPick()">Mark</button>
+      <button class="ghost-btn" onclick="clearPick()">Clear</button>
+    </div>
+  </div>
+
   <script>
     let fullData = null;
     let expDates = [];
     let currentExp = null;
+    let currentSymbol = '';
+    let aiPick = null;
     const columns = { iv: true, delta: true, theta: false, vega: false };
     const COL_LABEL = { iv: 'IV', delta: 'Δ', theta: 'Θ', vega: 'V' };
 
@@ -296,6 +478,12 @@
     async function loadChain() {
       const symbol = document.getElementById('symbolInput').value.trim().toUpperCase();
       if (!symbol) return;
+
+      if (symbol !== currentSymbol) {
+        aiPick = null;
+        document.getElementById('analysisCard').className = 'analysis-card';
+      }
+      currentSymbol = symbol;
 
       const statusMsg = document.getElementById('statusMsg');
       const table = document.getElementById('chainTable');
@@ -384,16 +572,18 @@
       const putCols = cols.slice().reverse().map(c => `<th class="side-put">${COL_LABEL[c]}</th>`).join('');
       head.innerHTML = `
         <tr>
-          <th class="side-call" colspan="${cols.length + 2}">Calls</th>
+          <th class="side-call" colspan="${cols.length + 3}">Calls</th>
           <th class="strike-hdr">Strike</th>
-          <th class="side-put" colspan="${cols.length + 2}">Puts</th>
+          <th class="side-put" colspan="${cols.length + 3}">Puts</th>
         </tr>
         <tr>
           ${callCols}
           <th class="side-call">Bid</th>
+          <th class="side-call">Ask</th>
           <th class="side-call">Last</th>
           <th class="strike-hdr"></th>
           <th class="side-put">Last</th>
+          <th class="side-put">Ask</th>
           <th class="side-put">Bid</th>
           ${putCols}
         </tr>
@@ -440,20 +630,27 @@
         if (callItm) tr.classList.add('call-itm');
         if (putItm) tr.classList.add('put-itm');
 
+        const picked = isPickedStrike(strike);
+        const callCls = 'call-cell' + (picked === 'CALL' ? ' pick-side' : '');
+        const putCls = 'put-cell' + (picked === 'PUT' ? ' pick-side' : '');
+        if (picked) tr.classList.add('ai-pick');
+
         const callGreekCells = cols.map(col =>
-          `<td class="call-cell greek">${greekCell(c, col)}</td>`
+          `<td class="${callCls} greek">${greekCell(c, col)}</td>`
         ).join('');
         const putGreekCells = cols.slice().reverse().map(col =>
-          `<td class="put-cell greek" style="text-align:left;">${greekCell(p, col)}</td>`
+          `<td class="${putCls} greek" style="text-align:left;">${greekCell(p, col)}</td>`
         ).join('');
 
         tr.innerHTML = `
           ${callGreekCells}
-          <td class="call-cell bid">${c ? fmt(c.bid) : '—'}</td>
-          <td class="call-cell last">${c ? fmt(c.last) : '—'}</td>
-          <td class="strike-cell">${strike.toFixed(strike % 1 === 0 ? 0 : 2)}</td>
-          <td class="put-cell last" style="text-align:left;">${p ? fmt(p.last) : '—'}</td>
-          <td class="put-cell bid" style="text-align:left;">${p ? fmt(p.bid) : '—'}</td>
+          <td class="${callCls} bid">${c ? fmt(c.bid) : '—'}</td>
+          <td class="${callCls} ask">${c ? fmt(c.ask) : '—'}</td>
+          <td class="${callCls} last">${c ? fmt(c.last) : '—'}</td>
+          <td class="strike-cell">${strike.toFixed(strike % 1 === 0 ? 0 : 2)}${picked ? '<span class="pick-tag">AI</span>' : ''}</td>
+          <td class="${putCls} last" style="text-align:left;">${p ? fmt(p.last) : '—'}</td>
+          <td class="${putCls} ask" style="text-align:left;">${p ? fmt(p.ask) : '—'}</td>
+          <td class="${putCls} bid" style="text-align:left;">${p ? fmt(p.bid) : '—'}</td>
           ${putGreekCells}
         `;
         body.appendChild(tr);
@@ -463,9 +660,168 @@
       table.style.display = 'table';
 
       requestAnimationFrame(() => {
-        const atmRow = body.querySelector('tr.atm');
-        if (atmRow) atmRow.scrollIntoView({ block: 'center' });
+        const target = body.querySelector('tr.ai-pick') || body.querySelector('tr.atm');
+        if (target) target.scrollIntoView({ block: 'center' });
       });
+    }
+
+    // --- AI analysis -------------------------------------------------------
+
+    function isPickedStrike(strike) {
+      if (!aiPick) return null;
+      if (aiPick.symbol !== currentSymbol || aiPick.exp !== currentExp) return null;
+      return Math.abs(aiPick.strike - strike) < 0.001 ? aiPick.side : null;
+    }
+
+    function escapeHtml(s) {
+      const div = document.createElement('div');
+      div.textContent = s == null ? '' : String(s);
+      return div.innerHTML;
+    }
+
+    function showAnalysisMessage(html) {
+      const card = document.getElementById('analysisCard');
+      card.className = 'analysis-card visible';
+      card.innerHTML = html;
+    }
+
+    // Only the strikes around the money are worth pasting — the far wings are
+    // noise and just make the prompt long.
+    const PROMPT_WINDOW = 18;
+
+    function buildClaudePrompt() {
+      const calls = fullData.callExpDateMap[currentExp] || {};
+      const puts = (fullData.putExpDateMap && fullData.putExpDateMap[currentExp]) || {};
+      const underlying = fullData.underlyingPrice || 0;
+      const all = Object.keys(calls).map(Number).sort((a, b) => a - b);
+      if (!all.length) return null;
+
+      let atmIdx = 0;
+      all.forEach((s, i) => {
+        if (Math.abs(s - underlying) < Math.abs(all[atmIdx] - underlying)) atmIdx = i;
+      });
+      const strikes = all.slice(
+        Math.max(0, atmIdx - PROMPT_WINDOW),
+        Math.min(all.length, atmIdx + PROMPT_WINDOW + 1)
+      );
+
+      const thesis = document.getElementById('thesisInput').value.trim();
+      const n = (v, d = 2) => (v === undefined || v === null ? '' : Number(v).toFixed(d));
+
+      const rows = strikes.map(strike => {
+        const key = strike.toFixed(1);
+        const c = (calls[key] || calls[String(strike)] || [])[0] || {};
+        const p = (puts[key] || puts[String(strike)] || [])[0] || {};
+        return [
+          strike,
+          n(c.bid), n(c.ask), n(c.last), n(c.delta), n(c.volatility, 0), n(c.theta), n(c.vega),
+          n(p.bid), n(p.ask), n(p.last), n(p.delta), n(p.volatility, 0), n(p.theta), n(p.vega),
+        ].join(' | ');
+      });
+
+      return [
+        `Here is a live options chain for ${currentSymbol}. Which single strike makes the most sense to buy, and why?`,
+        '',
+        `Underlying price: $${underlying.toFixed(2)}`,
+        `Expiration: ${expLabel(currentExp)}`,
+        thesis ? `My thesis: ${thesis}` : 'I have no strong directional thesis — evaluate calls and puts on the merits.',
+        '',
+        'Pick exactly one strike and side. Ground your reasoning in the specific numbers for that',
+        'contract — moneyness against spot, the bid/ask spread as a liquidity signal, delta as',
+        'directional exposure, IV for whether premium is rich or cheap, and theta against the time',
+        'remaining — and say why it beats the neighbouring strikes rather than giving generic options',
+        'theory. Name the real risks, including what has to happen for it to lose. Be concise.',
+        '',
+        'Prices in dollars, IV in percent. Blank means no quote.',
+        '',
+        'Strike | C Bid | C Ask | C Last | C Delta | C IV | C Theta | C Vega | P Bid | P Ask | P Last | P Delta | P IV | P Theta | P Vega',
+        '--- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | ---',
+        ...rows,
+      ].join('\n');
+    }
+
+    async function copyForClaude() {
+      if (!fullData || !currentExp) {
+        showAnalysisMessage('<p>Load a chain first.</p>');
+        return;
+      }
+
+      const prompt = buildClaudePrompt();
+      if (!prompt) {
+        showAnalysisMessage('<p>No strikes to copy for this expiration.</p>');
+        return;
+      }
+
+      const btn = document.getElementById('copyBtn');
+      let ok = true;
+      try {
+        await navigator.clipboard.writeText(prompt);
+      } catch (err) {
+        // Clipboard API needs a secure context; fall back to a manual select.
+        ok = false;
+      }
+
+      if (ok) {
+        btn.textContent = 'Copied ✓';
+        setTimeout(() => { btn.textContent = 'Copy for Claude'; }, 1800);
+        showAnalysisMessage(`
+          <h4>Copied — ${escapeHtml(currentSymbol)} ${escapeHtml(expLabel(currentExp))}</h4>
+          <p>Paste it into <a href="https://claude.ai" target="_blank" rel="noopener" style="color:var(--pick);">claude.ai</a>.
+          When it picks a strike, type it below (like <code>220C</code>) to highlight it in the chain.</p>
+        `);
+      } else {
+        showAnalysisMessage(`
+          <h4>Copy this into Claude</h4>
+          <p style="margin-bottom:10px;">Your browser blocked clipboard access — select all of this and copy it manually.</p>
+          <textarea class="prompt-dump" readonly onclick="this.select()">${escapeHtml(prompt)}</textarea>
+        `);
+      }
+    }
+
+    function markPick() {
+      const raw = document.getElementById('markInput').value.trim();
+      if (!raw) return;
+      if (!fullData || !currentExp) {
+        showAnalysisMessage('<p>Load a chain first.</p>');
+        return;
+      }
+
+      // Accepts "220C", "220 call", "220.5 p", "put 220" — strike plus a side.
+      const strike = parseFloat((raw.match(/\d+(\.\d+)?/) || [])[0]);
+      const side = /p/i.test(raw.replace(/\d|\./g, '')) ? 'PUT' : 'CALL';
+
+      if (isNaN(strike)) {
+        showAnalysisMessage('<p style="color:var(--put);">Could not read a strike out of that — try something like <code>220C</code>.</p>');
+        return;
+      }
+
+      const calls = fullData.callExpDateMap[currentExp] || {};
+      const exists = Object.keys(calls).some(k => Math.abs(Number(k) - strike) < 0.001);
+      if (!exists) {
+        showAnalysisMessage(`<p style="color:var(--put);">No ${escapeHtml(String(strike))} strike in this expiration. Check you are on the right expiration tab.</p>`);
+        return;
+      }
+
+      aiPick = { strike, side, exp: currentExp, symbol: currentSymbol };
+      renderChain(currentExp);
+      showAnalysisMessage(`
+        <div class="pick-header">
+          <span class="pick-contract">${escapeHtml(currentSymbol)} ${escapeHtml(currentExp.split(':')[0])} ${escapeHtml(String(strike))} ${escapeHtml(side)}</span>
+        </div>
+        <p>Marked in the chain above.</p>
+        <div class="disclaimer">
+          Anything Claude tells you about this chain is analysis of the numbers you pasted, not
+          investment advice — it knows nothing about your portfolio, risk tolerance, or goals.
+          Re-check the quotes before acting; they move.
+        </div>
+      `);
+    }
+
+    function clearPick() {
+      aiPick = null;
+      document.getElementById('markInput').value = '';
+      document.getElementById('analysisCard').className = 'analysis-card';
+      if (currentExp) renderChain(currentExp);
     }
 
     loadChain();
