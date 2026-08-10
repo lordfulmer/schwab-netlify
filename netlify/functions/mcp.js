@@ -54,6 +54,12 @@ function errorResult(message) {
   return { content: [{ type: 'text', text: message }], isError: true };
 }
 
+// A price-history request that is invalid or has no data — as opposed to a
+// network/auth failure — so callers that fan out over many symbols (the
+// watchlist scan) can tell "this symbol has nothing to say" apart from
+// "the whole scan should stop", which only REAUTH_REQUIRED means.
+class PriceHistoryError extends Error {}
+
 // Schwab keys expirations as "2026-08-10:1" — the date and the days to expiry.
 function parseExp(key) {
   const [date, dte] = key.split(':');
@@ -248,6 +254,132 @@ function indicators(full, window) {
     rangeLow: round(Math.min(...window.map((c) => c.low))),
     avgVolume20: volumes.length >= 20 ? Math.round(sma(volumes, 20)) : null,
     lastVolume: volumes[volumes.length - 1],
+  };
+}
+
+// The shared core of get_price_history and scan_watchlist: resolve range and
+// interval into what Schwab actually needs, fetch, and compute indicators over
+// the right two spans. Throws PriceHistoryError for a bad request or empty
+// result, or a generic/REAUTH_REQUIRED Error on transport failure — both are
+// meaningful to a caller fanning out over many symbols, so neither is caught
+// here.
+async function fetchPriceHistory(ticker, rangeKey, intervalKey, extendedHours) {
+  const asked = RANGES[rangeKey];
+  let { periodType, period } = asked;
+  const { frequencyType, frequency } = INTERVALS[intervalKey];
+
+  // "The last five days, daily candles" is an ordinary request that Schwab has
+  // no parameters for — a day-range only serves minute bars. Pull a month of
+  // daily bars instead and keep the last N sessions, rather than refusing
+  // something the caller can reasonably expect to work.
+  let sessionCap = null;
+  if (periodType === 'day' && frequencyType !== 'minute') {
+    sessionCap = period;
+    periodType = 'month';
+    period = 1;
+  }
+
+  // A 250-day average over a one-year range would rest on a couple of bars, or
+  // fall out entirely on a short trading year. Reach back far enough to seed
+  // the long averages properly; only the candles inside the requested range
+  // are reported.
+  if (frequencyType === 'daily' && approxDailyBars(periodType, period) < LONGEST_AVERAGE + 20) {
+    periodType = 'year';
+    period = 2;
+  }
+
+  if (!LEGAL[periodType].includes(frequencyType)) {
+    const usable = Object.keys(INTERVALS).filter((k) => LEGAL[periodType].includes(INTERVALS[k].frequencyType));
+    throw new PriceHistoryError(
+      `Schwab does not serve ${intervalKey} candles over a ${rangeKey} range. ` +
+        `Valid intervals for ${rangeKey}: ${usable.join(', ')}.`
+    );
+  }
+
+  const data = await schwabGet('pricehistory', {
+    symbol: ticker,
+    periodType,
+    period,
+    frequencyType,
+    frequency,
+    needExtendedHoursData: extendedHours ? 'true' : 'false',
+    needPreviousClose: 'true',
+  });
+
+  const candles = data.candles || [];
+  if (!candles.length) {
+    throw new PriceHistoryError(
+      `No candles returned for ${ticker} over ${rangeKey}. Check the symbol, or note that ` +
+        'Schwab only keeps intraday history for roughly the last several weeks.'
+    );
+  }
+
+  // The candles inside the range that was actually asked for. Sessions are
+  // counted for day-length ranges and cut by date for the rest.
+  const cutoff = windowStart(asked.periodType, asked.period, candles[candles.length - 1].datetime);
+  const window = sessionCap
+    ? candles.slice(-sessionCap)
+    : cutoff
+      ? candles.filter((c) => c.datetime >= cutoff)
+      : candles;
+  const inRange = window.length ? window : candles;
+
+  // Moving averages read the whole series so the long ones are properly
+  // seeded; highs, lows and the change read only the requested range.
+  const stats = indicators(candles, inRange);
+
+  return {
+    data,
+    candles,
+    inRange,
+    stats,
+    frequencyType,
+    reachedBack: candles.length > inRange.length,
+  };
+}
+
+// A simple close-vs-SMA50-vs-SMA200 read for the watchlist scan. Null when
+// there isn't enough history to seed both averages — a scan across a mixed
+// batch of old and newly-listed tickers should say "unknown", not guess.
+function trendLabel(stats) {
+  if (stats.sma50 === null || stats.sma200 === null) return null;
+  if (stats.lastClose > stats.sma50 && stats.sma50 > stats.sma200) return 'uptrend';
+  if (stats.lastClose < stats.sma50 && stats.sma50 < stats.sma200) return 'downtrend';
+  return 'mixed';
+}
+
+// Schwab reports -999 for fields it has no value for; pass that through raw
+// and it reads like a real (wildly wrong) number.
+const noSentinel = (v) => (v === undefined || v === null || v === -999 ? null : v);
+
+function formatQuote(ticker, entry) {
+  if (!entry || entry.invalid || !entry.quote) {
+    return { symbol: ticker, error: 'No quote returned — check the symbol.' };
+  }
+  const q = entry.quote;
+  const ref = entry.reference || {};
+
+  return {
+    symbol: ticker,
+    description: ref.description || null,
+    exchange: ref.exchangeName || q.exchangeName || null,
+    last: noSentinel(q.lastPrice),
+    mark: noSentinel(q.mark),
+    bid: noSentinel(q.bidPrice),
+    bidSize: q.bidSize ?? null,
+    ask: noSentinel(q.askPrice),
+    askSize: q.askSize ?? null,
+    netChange: noSentinel(q.netChange),
+    netPercentChange: noSentinel(q.netPercentChange),
+    open: noSentinel(q.openPrice),
+    dayHigh: noSentinel(q.highPrice),
+    dayLow: noSentinel(q.lowPrice),
+    previousClose: noSentinel(q.closePrice),
+    week52High: noSentinel(q['52WeekHigh']),
+    week52Low: noSentinel(q['52WeekLow']),
+    volume: q.totalVolume ?? null,
+    quoteTime: q.quoteTime ? stamp(q.quoteTime, true) : null,
+    securityStatus: q.securityStatus || null,
   };
 }
 
@@ -454,82 +586,20 @@ function buildServer() {
       },
     },
     async ({ symbol, range, interval, extendedHours, maxCandles }) => {
+      const ticker = symbol.toUpperCase();
+      const rangeKey = range || DEFAULT_RANGE;
+      const intervalKey = interval || defaultInterval(RANGES[rangeKey].periodType);
+
       try {
-        const ticker = symbol.toUpperCase();
-        const rangeKey = range || DEFAULT_RANGE;
-        const asked = RANGES[rangeKey];
-        const intervalKey = interval || defaultInterval(asked.periodType);
-        const { frequencyType, frequency } = INTERVALS[intervalKey];
+        const { data, candles, inRange, stats, frequencyType, reachedBack } = await fetchPriceHistory(
+          ticker,
+          rangeKey,
+          intervalKey,
+          extendedHours
+        );
 
-        // What actually gets requested from Schwab, which may reach back
-        // further than the caller asked for. The reported window is cut back
-        // down afterwards.
-        let { periodType, period } = asked;
-
-        // "The last five days, daily candles" is an ordinary request that Schwab
-        // has no parameters for — a day-range only serves minute bars. Pull a
-        // month of daily bars instead and keep the last N sessions, rather than
-        // refusing something the caller can reasonably expect to work.
-        let sessionCap = null;
-        if (periodType === 'day' && frequencyType !== 'minute') {
-          sessionCap = period;
-          periodType = 'month';
-          period = 1;
-        }
-
-        // A 250-day average over a one-year range would rest on a couple of
-        // bars, or fall out entirely on a short trading year. Reach back far
-        // enough to seed the long averages properly; only the candles inside
-        // the requested range are reported.
-        if (frequencyType === 'daily' && approxDailyBars(periodType, period) < LONGEST_AVERAGE + 20) {
-          periodType = 'year';
-          period = 2;
-        }
-
-        if (!LEGAL[periodType].includes(frequencyType)) {
-          const usable = Object.keys(INTERVALS).filter((k) =>
-            LEGAL[periodType].includes(INTERVALS[k].frequencyType)
-          );
-          return errorResult(
-            `Schwab does not serve ${intervalKey} candles over a ${rangeKey} range. ` +
-              `Valid intervals for ${rangeKey}: ${usable.join(', ')}.`
-          );
-        }
-
-        const data = await schwabGet('pricehistory', {
-          symbol: ticker,
-          periodType,
-          period,
-          frequencyType,
-          frequency,
-          needExtendedHoursData: extendedHours ? 'true' : 'false',
-          needPreviousClose: 'true',
-        });
-
-        const candles = data.candles || [];
-        if (!candles.length) {
-          return errorResult(
-            `No candles returned for ${ticker} over ${rangeKey}. Check the symbol, or note that ` +
-              'Schwab only keeps intraday history for roughly the last several weeks.'
-          );
-        }
-
-        // The candles inside the range that was actually asked for. Sessions
-        // are counted for day-length ranges and cut by date for the rest.
-        const cutoff = windowStart(asked.periodType, asked.period, candles[candles.length - 1].datetime);
-        const window = sessionCap
-          ? candles.slice(-sessionCap)
-          : cutoff
-            ? candles.filter((c) => c.datetime >= cutoff)
-            : candles;
-        const inRange = window.length ? window : candles;
-
-        // Moving averages read the whole series so the long ones are properly
-        // seeded; highs, lows and the change read only the requested range.
-        const stats = indicators(candles, inRange);
         const intraday = frequencyType === 'minute';
         const shown = inRange.slice(-(maxCandles || DEFAULT_MAX_CANDLES));
-        const reachedBack = candles.length > inRange.length;
 
         return textResult({
           symbol: ticker,
@@ -566,6 +636,7 @@ function buildServer() {
           ]),
         });
       } catch (err) {
+        if (err instanceof PriceHistoryError) return errorResult(err.message);
         if (err.message && err.message.startsWith('REAUTH_REQUIRED')) {
           return errorResult(
             'The Schwab login has expired. Visit /.netlify/functions/schwab-auth-start on the site to reconnect, then try again.'
@@ -573,6 +644,124 @@ function buildServer() {
         }
         return errorResult(`Could not fetch price history: ${err.message}`);
       }
+    }
+  );
+
+  server.registerTool(
+    'get_quote',
+    {
+      title: 'Get a live quote',
+      description:
+        'Get a real-time bid/ask/last/mark quote for one or more stock symbols, plus day range, previous ' +
+        'close, 52-week high/low and volume. Call this for a fast price check that does not need the ' +
+        'full options chain or price history — e.g. "what is NVDA trading at" or "quote AAPL and MSFT". ' +
+        'Reflects the last trade when the market is closed.',
+      inputSchema: {
+        symbols: z
+          .union([z.string(), z.array(z.string()).min(1).max(20)])
+          .describe('One ticker or an array of up to 20, e.g. "NVDA" or ["NVDA", "AAPL", "MSFT"].'),
+      },
+    },
+    async ({ symbols }) => {
+      try {
+        const tickers = [...new Set((Array.isArray(symbols) ? symbols : [symbols]).map((s) => s.toUpperCase()))];
+        const data = await schwabGet('quotes', { symbols: tickers.join(','), fields: 'quote,reference' });
+        const quotes = tickers.map((t) => formatQuote(t, data[t]));
+        const missing = quotes.filter((q) => q.error).map((q) => q.symbol);
+
+        return textResult({
+          quotes,
+          quoteNote:
+            'Live from Schwab. Prices are delayed or reflect the last trade outside market hours.' +
+            (missing.length ? ` No data for: ${missing.join(', ')} — check the symbol.` : ''),
+        });
+      } catch (err) {
+        if (err.message && err.message.startsWith('REAUTH_REQUIRED')) {
+          return errorResult(
+            'The Schwab login has expired. Visit /.netlify/functions/schwab-auth-start on the site to reconnect, then try again.'
+          );
+        }
+        return errorResult(`Could not fetch quotes: ${err.message}`);
+      }
+    }
+  );
+
+  server.registerTool(
+    'scan_watchlist',
+    {
+      title: 'Scan a watchlist for trend and moving-average status',
+      description:
+        'Run price-history indicators across multiple symbols at once and return a compact summary for ' +
+        'each — last close, percent change over the range, SMA 20/50/100/200/250, RSI, MACD, range ' +
+        'high/low, and a simple trend label. Call this when the person wants to screen several tickers at ' +
+        'once instead of one at a time, e.g. "which of these are above their 200-day" or "scan my ' +
+        'watchlist for RSI over 70". Up to 15 symbols per call; for one symbol use get_price_history ' +
+        'instead, which also returns the underlying candles.',
+      inputSchema: {
+        symbols: z.array(z.string()).min(1).max(15).describe('Tickers to scan, e.g. ["NVDA", "AAPL", "MSFT"].'),
+        range: z
+          .enum(Object.keys(RANGES))
+          .optional()
+          .describe(`How far back each symbol's indicators look. Defaults to ${DEFAULT_RANGE}.`),
+        interval: z
+          .enum(Object.keys(INTERVALS))
+          .optional()
+          .describe('Candle size for the scan. Defaults to daily; weekly also makes sense for a longer view.'),
+      },
+    },
+    async ({ symbols, range, interval }) => {
+      const rangeKey = range || DEFAULT_RANGE;
+      const intervalKey = interval || defaultInterval(RANGES[rangeKey].periodType);
+      const tickers = [...new Set(symbols.map((s) => s.toUpperCase()))];
+
+      const settled = await Promise.allSettled(
+        tickers.map((ticker) => fetchPriceHistory(ticker, rangeKey, intervalKey, false))
+      );
+
+      let reauth = false;
+      const results = settled.map((outcome, i) => {
+        const ticker = tickers[i];
+        if (outcome.status === 'fulfilled') {
+          const { stats } = outcome.value;
+          return {
+            symbol: ticker,
+            lastClose: stats.lastClose,
+            changePercentOverRange: stats.changePercentOverRange,
+            sma20: stats.sma20,
+            sma50: stats.sma50,
+            sma100: stats.sma100,
+            sma200: stats.sma200,
+            sma250: stats.sma250,
+            rsi14: stats.rsi14,
+            macd: stats.macd,
+            rangeHigh: stats.rangeHigh,
+            rangeLow: stats.rangeLow,
+            trend: trendLabel(stats),
+          };
+        }
+
+        const message = (outcome.reason && outcome.reason.message) || String(outcome.reason);
+        if (message.startsWith('REAUTH_REQUIRED')) reauth = true;
+        return { symbol: ticker, error: message.slice(0, 200) };
+      });
+
+      // A reauth failure is identical for every symbol in the batch — surface
+      // it once rather than as 15 copies of the same error.
+      if (reauth) {
+        return errorResult(
+          'The Schwab login has expired. Visit /.netlify/functions/schwab-auth-start on the site to reconnect, then try again.'
+        );
+      }
+
+      return textResult({
+        range: rangeKey,
+        interval: intervalKey,
+        scanned: tickers.length,
+        results,
+        note:
+          'Live from Schwab. Prices may be delayed or stale outside market hours. trend compares last ' +
+          'close against SMA50 and SMA200 — a quick starting point, not a signal.',
+      });
     }
   );
 

@@ -96,6 +96,14 @@ async function refreshAccessToken(refreshToken) {
   return storeTokens(tokens);
 }
 
+// A single invocation can now issue several Schwab calls in parallel (a
+// watchlist scan). Without this, every one of them would see the same expired
+// token and fire its own refresh_token grant — and Schwab rotates refresh
+// tokens, so only the first would succeed and the rest would fail with a
+// spurious REAUTH_REQUIRED. Concurrent callers within one invocation instead
+// share a single in-flight refresh.
+let refreshPromise = null;
+
 // Main entry point: call this from any function that needs to hit the Schwab API.
 // Returns a valid, unexpired access token, refreshing automatically if needed.
 async function getValidAccessToken() {
@@ -110,7 +118,12 @@ async function getValidAccessToken() {
     return stored.access_token;
   }
 
-  const refreshed = await refreshAccessToken(stored.refresh_token);
+  if (!refreshPromise) {
+    refreshPromise = refreshAccessToken(stored.refresh_token).finally(() => {
+      refreshPromise = null;
+    });
+  }
+  const refreshed = await refreshPromise;
   return refreshed.access_token;
 }
 

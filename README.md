@@ -70,17 +70,19 @@ If the connector asks you to sign in and the sign-in fails, the URL is wrong —
 the server uses no OAuth, so Claude should never prompt for a login.
 
 Then just ask, in any conversation: *"What's the best NVDA strike expiring this
-week?"* or *"Is NVDA overbought? Show me the daily chart for the last 6 months."*
-Claude calls the connector, pulls the live data, and reasons over the actual
-numbers.
+week?"*, *"Is NVDA overbought? Show me the daily chart for the last 6 months."*,
+or *"Scan my watchlist for anything above its 200-day."* Claude calls the
+connector, pulls the live data, and reasons over the actual numbers.
 
-Three tools are exposed:
+Five tools are exposed:
 
 | Tool | What it does |
 |---|---|
 | `list_expirations` | Expiration dates for a symbol, with days to expiry and strike counts |
 | `get_options_chain` | Strikes around the money for one expiration — bid, ask, last, delta, gamma, theta, vega, IV, open interest, volume, both sides |
 | `get_price_history` | OHLCV candles plus SMA 20/50/100/200/250, EMA 9/21, MACD, RSI 14, ATR 14, range high/low and average volume |
+| `get_quote` | Fast live bid/ask/last/mark for one or more symbols at once, plus day range, previous close, 52-week high/low and volume |
+| `scan_watchlist` | The same moving-average and RSI read as `get_price_history`, compressed into one summary row per symbol, for up to 15 symbols at once |
 
 ### Price history ranges and intervals
 
@@ -119,6 +121,30 @@ Two different spans feed them, which is what makes the long averages usable:
 
 The response spells out which is which, and `maxCandles` only limits how many
 rows get *listed* — it never changes a computed number.
+
+### `get_quote`
+
+Takes one symbol or an array (up to 20), returns one bid/ask/last/mark/day-range
+row per symbol in a single Schwab call. Use it for "what's it trading at"
+questions that don't need a chain or a chart. A symbol Schwab doesn't
+recognize shows up as an `error` row rather than failing the whole call, so one
+typo in a batch doesn't cost you the rest.
+
+### `scan_watchlist`
+
+Same indicators as `get_price_history` (SMA 20/50/100/200/250, RSI, MACD,
+range high/low), but for up to 15 symbols in one call, trimmed to a summary
+row each — no candle data, so a 15-symbol scan doesn't come back as fifteen
+full candle dumps. Includes a `trend` field (`uptrend` / `downtrend` / `mixed`,
+or `null` if there isn't enough history yet) from comparing last close against
+SMA 50 and SMA 200 — a starting point, not a signal.
+
+The 15 symbols fetch in parallel, not one at a time, to stay well inside
+Netlify's function time limit. One consequence worth knowing: `get_quote` and
+`scan_watchlist` can both trigger a Schwab token refresh from several tool
+calls at once. The token manager already handles that — concurrent callers
+share a single in-flight refresh rather than each firing their own — so this
+doesn't need anything from you, but it's why that logic exists.
 
 Treat the secret like a password: anyone holding that URL can pull chains
 against your Schwab connection.
