@@ -154,18 +154,31 @@ function buildServer() {
           Math.min(all.length, atmIdx + window + 1)
         );
 
+        // Schwab reports -999 for greeks and IV it has no value for. Passed
+        // through as-is that reads like a real (wildly wrong) number, so it
+        // becomes null instead.
+        const num = (v) => (v === undefined || v === null || v === -999 ? null : v);
+
         const leg = (contract) => {
           if (!contract) return null;
+
+          const quoted =
+            num(contract.bid) || num(contract.ask) || num(contract.last) || contract.openInterest;
+
+          // A strike with no bid, no ask, no trade and no open interest is not
+          // tradeable; say so rather than emitting a row of zeros.
+          if (!quoted) return null;
+
           return {
-            bid: contract.bid,
-            ask: contract.ask,
-            last: contract.last,
-            mark: contract.mark,
-            delta: contract.delta,
-            gamma: contract.gamma,
-            theta: contract.theta,
-            vega: contract.vega,
-            ivPercent: contract.volatility,
+            bid: num(contract.bid),
+            ask: num(contract.ask),
+            last: num(contract.last),
+            mark: num(contract.mark),
+            delta: num(contract.delta),
+            gamma: num(contract.gamma),
+            theta: num(contract.theta),
+            vega: num(contract.vega),
+            ivPercent: num(contract.volatility),
             openInterest: contract.openInterest,
             volume: contract.totalVolume,
             inTheMoney: contract.inTheMoney,
