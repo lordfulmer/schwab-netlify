@@ -90,13 +90,17 @@ intervals that do work:
 
 | Range | Intervals allowed |
 |---|---|
-| `1d` `2d` `3d` `5d` `10d` | `1min` `5min` `10min` `15min` `30min` |
+| `1d` `2d` `3d` `5d` `10d` | `1min` `5min` `10min` `15min` `30min` `daily` `weekly` |
 | `1m` `2m` `3m` `6m` `ytd` | `daily` `weekly` |
 | `1y` `2y` `3y` `5y` `10y` | `daily` `weekly` `monthly` |
 
 Both are optional — the default is 6 months of daily candles. Schwab only keeps
 intraday history for roughly the last several weeks, so minute candles from
 months ago come back empty.
+
+Schwab itself won't serve daily candles over a range measured in days, so asking
+for `5d` + `daily` gets a month of daily bars trimmed to the last five sessions.
+The indicators still come off the whole month, and the response says so.
 
 The indicators are computed on the server over the **full** series Schwab
 returns, even when `maxCandles` trims the printed rows, so a 200-day average

@@ -390,8 +390,8 @@ function buildServer() {
           .enum(Object.keys(INTERVALS))
           .optional()
           .describe(
-            'Candle size. Minute intervals require a range of 1d-10d; daily/weekly work with months ' +
-              'and years; monthly only with years. Defaults to a sensible size for the range.'
+            'Candle size. Minute intervals require a range of 1d-10d; daily and weekly work with any ' +
+              'range; monthly only with years. Defaults to a sensible size for the range.'
           ),
         extendedHours: z
           .boolean()
@@ -413,9 +413,20 @@ function buildServer() {
       try {
         const ticker = symbol.toUpperCase();
         const rangeKey = range || '6m';
-        const { periodType, period } = RANGES[rangeKey];
+        let { periodType, period } = RANGES[rangeKey];
         const intervalKey = interval || defaultInterval(periodType, period);
         const { frequencyType, frequency } = INTERVALS[intervalKey];
+
+        // "The last five days, daily candles" is an ordinary request that Schwab
+        // has no parameters for — a day-range only serves minute bars. Pull a
+        // month of daily bars instead and keep the last N sessions, rather than
+        // refusing something the caller can reasonably expect to work.
+        let sessionCap = null;
+        if (periodType === 'day' && frequencyType !== 'minute') {
+          sessionCap = period;
+          periodType = 'month';
+          period = 1;
+        }
 
         if (!LEGAL[periodType].includes(frequencyType)) {
           const usable = Object.keys(INTERVALS).filter((k) =>
@@ -449,7 +460,9 @@ function buildServer() {
         // trimmed, so a 200-day average survives a short candle window.
         const stats = indicators(candles);
         const intraday = frequencyType === 'minute';
-        const shown = candles.slice(-(maxCandles || DEFAULT_MAX_CANDLES));
+        const shown = candles.slice(
+          -Math.min(maxCandles || DEFAULT_MAX_CANDLES, sessionCap || Infinity)
+        );
 
         return textResult({
           symbol: ticker,
@@ -460,7 +473,16 @@ function buildServer() {
           candlesReturned: shown.length,
           candlesAvailable: candles.length,
           indicators: stats,
-          indicatorNote: `Computed over all ${candles.length} ${intervalKey} candles. Prices are live from Schwab and may be delayed or stale outside market hours.`,
+          indicatorNote: [
+            `Computed over all ${candles.length} ${intervalKey} candles Schwab returned.`,
+            sessionCap
+              ? `That reaches back further than the ${rangeKey} listed below, because moving averages ` +
+                'need the history — treat only the listed candles as the recent action.'
+              : null,
+            'Prices are live from Schwab and may be delayed or stale outside market hours.',
+          ]
+            .filter(Boolean)
+            .join(' '),
           columns: ['time', 'open', 'high', 'low', 'close', 'volume'],
           candles: shown.map((c) => [
             stamp(c.datetime, intraday),
