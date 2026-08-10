@@ -1,0 +1,8 @@
+{
+  "name": "schwab-netlify",
+  "version": "1.0.0",
+  "description": "Schwab Trader API OAuth + data functions for Netlify",
+  "dependencies": {
+    "@netlify/blobs": "^8.1.0"
+  }
+}

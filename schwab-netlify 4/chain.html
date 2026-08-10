@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Options Chain</title>
+<style>
+  :root {
+    --bg: #0a0e14;
+    --panel: #10151f;
+    --line: #1c2433;
+    --text: #e6e9ef;
+    --dim: #6b7688;
+    --call: #34d399;
+    --call-dim: rgba(52, 211, 153, 0.08);
+    --call-itm: rgba(52, 211, 153, 0.14);
+    --put: #f87171;
+    --put-dim: rgba(248, 113, 113, 0.08);
+    --put-itm: rgba(248, 113, 113, 0.14);
+    --atm: #f5c451;
+    --mono: 'SF Mono', 'IBM Plex Mono', Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    margin: 0;
+    padding: 24px 16px 60px;
+  }
+  .header {
+    max-width: 1100px;
+    margin: 0 auto 20px;
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  .symbol-input {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 20px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    padding: 8px 14px;
+    border-radius: 8px;
+    width: 130px;
+    text-transform: uppercase;
+  }
+  .symbol-input:focus { outline: 1px solid var(--dim); }
+  .go-btn {
+    background: var(--line);
+    color: var(--text);
+    border: none;
+    padding: 9px 18px;
+    border-radius: 8px;
+    font-weight: 600;
+    cursor: pointer;
+    font-family: var(--sans);
+  }
+  .go-btn:hover { background: #263047; }
+  .price-block {
+    font-family: var(--mono);
+    margin-left: auto;
+    text-align: right;
+  }
+  .price-block .px {
+    font-size: 26px;
+    font-weight: 700;
+  }
+  .price-block .lbl {
+    font-size: 11px;
+    color: var(--dim);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+  .exp-tabs {
+    max-width: 1100px;
+    margin: 0 auto 14px;
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .exp-tab {
+    font-family: var(--mono);
+    font-size: 12px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    color: var(--dim);
+    padding: 6px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .exp-tab.active {
+    color: var(--atm);
+    border-color: var(--atm);
+  }
+  .chain-wrap {
+    max-width: 1100px;
+    margin: 0 auto;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--mono);
+    font-size: 12.5px;
+  }
+  thead th {
+    font-family: var(--sans);
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--dim);
+    font-weight: 600;
+    padding: 10px 8px;
+    border-bottom: 1px solid var(--line);
+  }
+  thead .side-call { color: var(--call); text-align: right; }
+  thead .side-put { color: var(--put); text-align: left; }
+  thead .strike-hdr { text-align: center; }
+  tbody td {
+    padding: 6px 8px;
+    text-align: right;
+    white-space: nowrap;
+    border-bottom: 1px solid rgba(255,255,255,0.03);
+  }
+  .strike-cell {
+    text-align: center;
+    font-weight: 700;
+    color: var(--text);
+    background: rgba(255,255,255,0.02);
+  }
+  tr.atm .strike-cell {
+    color: var(--atm);
+    background: rgba(245, 196, 81, 0.1);
+  }
+  .call-cell { background: transparent; }
+  .put-cell { background: transparent; }
+  tr.call-itm .call-cell { background: var(--call-itm); }
+  tr.put-itm .put-cell { background: var(--put-itm); }
+  .bid { color: var(--dim); }
+  .last { color: var(--text); font-weight: 600; }
+  .delta { color: var(--dim); font-size: 11px; }
+  .iv { color: var(--dim); font-size: 11px; }
+  .empty, .loading {
+    text-align: center;
+    padding: 60px 20px;
+    color: var(--dim);
+    font-family: var(--mono);
+    font-size: 13px;
+  }
+  .err {
+    max-width: 1100px;
+    margin: 20px auto;
+    background: var(--put-dim);
+    border: 1px solid var(--put);
+    color: var(--put);
+    padding: 14px 16px;
+    border-radius: 8px;
+    font-family: var(--mono);
+    font-size: 13px;
+  }
+  ::-webkit-scrollbar { height: 6px; }
+</style>
+</head>
+<body>
+
+  <div class="header">
+    <input class="symbol-input" id="symbolInput" value="NVDA" maxlength="6">
+    <button class="go-btn" onclick="loadChain()">Load Chain</button>
+    <div class="price-block">
+      <div class="px" id="underlyingPx">—</div>
+      <div class="lbl" id="underlyingLbl">underlying</div>
+    </div>
+  </div>
+
+  <div class="exp-tabs" id="expTabs"></div>
+
+  <div class="chain-wrap">
+    <table id="chainTable" style="display:none;">
+      <thead>
+        <tr>
+          <th class="side-call" colspan="4">Calls</th>
+          <th class="strike-hdr">Strike</th>
+          <th class="side-put" colspan="4">Puts</th>
+        </tr>
+        <tr>
+          <th class="side-call">IV</th>
+          <th class="side-call">Δ</th>
+          <th class="side-call">Bid</th>
+          <th class="side-call">Last</th>
+          <th class="strike-hdr"></th>
+          <th class="side-put">Last</th>
+          <th class="side-put">Bid</th>
+          <th class="side-put">Δ</th>
+          <th class="side-put">IV</th>
+        </tr>
+      </thead>
+      <tbody id="chainBody"></tbody>
+    </table>
+    <div class="loading" id="statusMsg">Enter a symbol and hit Load Chain.</div>
+  </div>
+
+  <script>
+    let fullData = null;
+
+    async function loadChain() {
+      const symbol = document.getElementById('symbolInput').value.trim().toUpperCase();
+      if (!symbol) return;
+
+      const statusMsg = document.getElementById('statusMsg');
+      const table = document.getElementById('chainTable');
+      table.style.display = 'none';
+      statusMsg.style.display = 'block';
+      statusMsg.textContent = `Loading ${symbol}...`;
+      document.getElementById('expTabs').innerHTML = '';
+
+      try {
+        const res = await fetch(`/.netlify/functions/schwab-options-chain?symbol=${encodeURIComponent(symbol)}`);
+        const text = await res.text();
+        if (!res.ok) {
+          statusMsg.textContent = `Error ${res.status}: ${text.slice(0, 200)}`;
+          return;
+        }
+        const data = JSON.parse(text);
+        fullData = data;
+
+        document.getElementById('underlyingPx').textContent =
+          data.underlyingPrice ? '$' + data.underlyingPrice.toFixed(2) : '—';
+        document.getElementById('underlyingLbl').textContent = symbol;
+
+        const expDates = Object.keys(data.callExpDateMap || {});
+        if (!expDates.length) {
+          statusMsg.textContent = 'No expirations returned for this symbol.';
+          return;
+        }
+        renderExpTabs(expDates);
+        renderChain(expDates[0]);
+      } catch (err) {
+        statusMsg.textContent = 'Request failed: ' + err.message;
+      }
+    }
+
+    function renderExpTabs(expDates) {
+      const tabsEl = document.getElementById('expTabs');
+      tabsEl.innerHTML = '';
+      expDates.forEach((exp, i) => {
+        const label = exp.split(':')[0];
+        const btn = document.createElement('button');
+        btn.className = 'exp-tab' + (i === 0 ? ' active' : '');
+        btn.textContent = label;
+        btn.onclick = () => {
+          document.querySelectorAll('.exp-tab').forEach(t => t.classList.remove('active'));
+          btn.classList.add('active');
+          renderChain(exp);
+        };
+        tabsEl.appendChild(btn);
+      });
+    }
+
+    function fmt(n, d = 2) {
+      return (n === undefined || n === null) ? '—' : Number(n).toFixed(d);
+    }
+
+    function renderChain(expKey) {
+      const statusMsg = document.getElementById('statusMsg');
+      const table = document.getElementById('chainTable');
+      const body = document.getElementById('chainBody');
+      body.innerHTML = '';
+
+      const calls = fullData.callExpDateMap[expKey] || {};
+      const puts = (fullData.putExpDateMap && fullData.putExpDateMap[expKey]) || {};
+      const strikes = Object.keys(calls).map(Number).sort((a, b) => a - b);
+      const underlying = fullData.underlyingPrice || 0;
+
+      if (!strikes.length) {
+        statusMsg.textContent = 'No strikes found for this expiration.';
+        table.style.display = 'none';
+        return;
+      }
+
+      strikes.forEach(strike => {
+        const strikeKey = strikes.find(() => true) !== undefined ? String(strike.toFixed(1)) : null;
+        const c = (calls[strikeKey] || calls[String(strike)] || [])[0];
+        const p = (puts[strikeKey] || puts[String(strike)] || [])[0];
+
+        const tr = document.createElement('tr');
+        const isAtm = Math.abs(strike - underlying) < (underlying * 0.0025);
+        const callItm = strike < underlying;
+        const putItm = strike > underlying;
+
+        if (isAtm) tr.classList.add('atm');
+        if (callItm) tr.classList.add('call-itm');
+        if (putItm) tr.classList.add('put-itm');
+
+        tr.innerHTML = `
+          <td class="call-cell iv">${c ? fmt(c.volatility, 0) + '%' : '—'}</td>
+          <td class="call-cell delta">${c ? fmt(c.delta) : '—'}</td>
+          <td class="call-cell bid">${c ? fmt(c.bid) : '—'}</td>
+          <td class="call-cell last">${c ? fmt(c.last) : '—'}</td>
+          <td class="strike-cell">${strike.toFixed(strike % 1 === 0 ? 0 : 2)}</td>
+          <td class="put-cell last" style="text-align:left;">${p ? fmt(p.last) : '—'}</td>
+          <td class="put-cell bid" style="text-align:left;">${p ? fmt(p.bid) : '—'}</td>
+          <td class="put-cell delta" style="text-align:left;">${p ? fmt(p.delta) : '—'}</td>
+          <td class="put-cell iv" style="text-align:left;">${p ? fmt(p.volatility, 0) + '%' : '—'}</td>
+        `;
+        body.appendChild(tr);
+      });
+
+      statusMsg.style.display = 'none';
+      table.style.display = 'table';
+
+      // scroll ATM row into view
+      requestAnimationFrame(() => {
+        const atmRow = body.querySelector('tr.atm');
+        if (atmRow) atmRow.scrollIntoView({ block: 'center' });
+      });
+    }
+
+    loadChain();
+  </script>
+</body>
+</html>

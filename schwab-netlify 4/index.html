@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Schwab API Connector</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0a0e14;
+      color: #e6e6e6;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      margin: 0;
+    }
+    .card {
+      background: #131822;
+      border: 1px solid #232a38;
+      border-radius: 12px;
+      padding: 40px;
+      max-width: 440px;
+      width: 90%;
+    }
+    h1 {
+      font-size: 22px;
+      margin: 0 0 8px;
+    }
+    p {
+      color: #9aa4b2;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    .btn {
+      display: block;
+      text-align: center;
+      background: #1a5fb4;
+      color: white;
+      text-decoration: none;
+      padding: 12px;
+      border-radius: 8px;
+      font-weight: 600;
+      margin-top: 20px;
+    }
+    .btn.secondary {
+      background: #232a38;
+    }
+    input {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 10px;
+      margin-top: 8px;
+      border-radius: 8px;
+      border: 1px solid #232a38;
+      background: #0a0e14;
+      color: #e6e6e6;
+      font-size: 14px;
+    }
+    #result {
+      margin-top: 16px;
+      font-size: 12px;
+      color: #9aa4b2;
+      white-space: pre-wrap;
+      word-break: break-all;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Schwab API Connector</h1>
+    <p>Connect your Schwab account, then pull an options chain to confirm it's working.</p>
+
+    <a class="btn" href="/.netlify/functions/schwab-auth-start">Connect Schwab Account</a>
+
+    <p style="margin-top:24px;">Test a symbol:</p>
+    <input id="symbol" placeholder="e.g. NVDA" value="NVDA">
+    <a class="btn secondary" href="#" onclick="testChain(); return false;">Pull Options Chain</a>
+    <div id="result"></div>
+  </div>
+
+  <script>
+    async function testChain() {
+      const symbol = document.getElementById('symbol').value.trim();
+      const resultEl = document.getElementById('result');
+      resultEl.textContent = 'Loading...';
+      try {
+        const res = await fetch(`/.netlify/functions/schwab-options-chain?symbol=${encodeURIComponent(symbol)}`);
+        const text = await res.text();
+        resultEl.textContent = res.ok
+          ? text.slice(0, 1000) + (text.length > 1000 ? '...' : '')
+          : `Error ${res.status}: ${text}`;
+      } catch (err) {
+        resultEl.textContent = 'Request failed: ' + err.message;
+      }
+    }
+  </script>
+</body>
+</html>
