@@ -201,13 +201,19 @@ function buildServer() {
   return server;
 }
 
-function authorized(request) {
+// The secret rides in the URL path (/mcp/<secret>) rather than a query string,
+// because an MCP client's later requests are not guaranteed to carry the query
+// it was configured with — but they always carry the path. Header and query
+// forms still work for command-line testing.
+function authorized(request, event) {
   const secret = process.env.MCP_SHARED_SECRET;
   if (!secret) return false;
 
   if (request.headers.get('authorization') === `Bearer ${secret}`) return true;
+  if (new URL(request.url).searchParams.get('key') === secret) return true;
 
-  return new URL(request.url).searchParams.get('key') === secret;
+  const path = (event.path || new URL(request.url).pathname || '').replace(/\/+$/, '');
+  return path.endsWith(`/${secret}`);
 }
 
 // Bridge the v1 Lambda-style event into the web Request/Response pair the MCP
@@ -241,8 +247,12 @@ exports.handler = async (event) => {
 
   const request = toRequest(event);
 
-  if (!authorized(request)) {
-    return { statusCode: 401, body: 'Unauthorized.' };
+  // Deliberately 404, not 401. A 401 is an OAuth challenge under the MCP
+  // authorization spec, so returning one sends clients off to hunt for an
+  // authorization server that does not exist here — which surfaces to the user
+  // as a failed sign-in rather than "wrong URL".
+  if (!authorized(request, event)) {
+    return { statusCode: 404, body: 'Not found.' };
   }
 
   // Stateless: no sessionIdGenerator, and plain JSON rather than SSE, since each
