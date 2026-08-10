@@ -48,11 +48,26 @@ Redeploy. Until this is set the endpoint returns 503 and serves nothing — it i
 gated because it exposes Schwab-authenticated data.
 
 **Add the connector.** In claude.ai → Settings → Connectors → Add custom
-connector, paste:
+connector, paste — note the secret goes in the **path**, not a `?key=`:
 
 ```
-https://YOUR-SITE.netlify.app/mcp?key=YOUR_SECRET
+https://YOUR-SITE.netlify.app/mcp/YOUR_SECRET
 ```
+
+Check it works before adding it, replacing both placeholders:
+
+```
+curl -sS -X POST https://YOUR-SITE.netlify.app/mcp/YOUR_SECRET \
+  -H 'content-type: application/json' \
+  -H 'accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+```
+
+You should get JSON listing both tools. `404` means the secret in the URL does
+not match the environment variable; `503` means the variable is not set at all.
+
+If the connector asks you to sign in and the sign-in fails, the URL is wrong —
+the server uses no OAuth, so Claude should never prompt for a login.
 
 Then just ask, in any conversation: *"What's the best NVDA strike expiring this
 week?"* Claude calls the connector, pulls the live chain, and reasons over the
