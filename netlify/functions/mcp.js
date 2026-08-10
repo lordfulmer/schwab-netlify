@@ -25,6 +25,12 @@ const { getValidAccessToken } = require('./schwab-token-manager');
 
 const DEFAULT_WINDOW = 12;
 const DEFAULT_MAX_CANDLES = 300;
+const DEFAULT_RANGE = '1y';
+
+// The longest moving average served. A range only just long enough to hold it
+// (a year is ~252 trading days) would leave it null or resting on two or three
+// bars, so the fetch is widened to cover it — see widenForAverages below.
+const LONGEST_AVERAGE = 250;
 
 async function schwabGet(path, params) {
   const accessToken = await getValidAccessToken();
@@ -95,10 +101,37 @@ const LEGAL = {
   ytd: ['daily', 'weekly'],
 };
 
-function defaultInterval(periodType, period) {
-  if (periodType === 'day') return '5min';
-  if (periodType === 'year' && period > 2) return 'weekly';
-  return 'daily';
+// Daily candles everywhere except a range measured in days, where Schwab only
+// serves minute bars anyway.
+function defaultInterval(periodType) {
+  return periodType === 'day' ? '5min' : 'daily';
+}
+
+// Roughly how many daily bars a range holds — 252 trading days a year, 21 a
+// month. Only used to decide whether to reach back further, so an estimate is
+// enough; the window that gets reported is cut by date, not by this.
+function approxDailyBars(periodType, period) {
+  if (periodType === 'year') return period * 252;
+  if (periodType === 'ytd') return 252;
+  if (periodType === 'month') return period * 21;
+  return period;
+}
+
+// Where the range the caller asked for begins, measured back from the last
+// candle. Day-length ranges count sessions instead, since counting calendar
+// days there would swallow weekends.
+function windowStart(periodType, period, lastMs) {
+  const d = new Date(lastMs);
+  if (periodType === 'month') {
+    d.setUTCMonth(d.getUTCMonth() - period);
+    return d.getTime();
+  }
+  if (periodType === 'year') {
+    d.setUTCFullYear(d.getUTCFullYear() - period);
+    return d.getTime();
+  }
+  if (periodType === 'ytd') return Date.UTC(d.getUTCFullYear(), 0, 1);
+  return null;
 }
 
 const NY_DAY = new Intl.DateTimeFormat('en-CA', {
@@ -182,27 +215,37 @@ function atr(candles, n = 14) {
 
 // Computed here rather than left to the model: these are cheap for a CPU and
 // error-prone as mental arithmetic over hundreds of closes.
-function indicators(candles) {
-  const closes = candles.map((c) => c.close);
-  const volumes = candles.map((c) => c.volume);
+//
+// Two series go in, and the distinction matters. Moving averages run over
+// everything fetched, because a 250-day average needs 250 days of lookback
+// whatever range was asked for. High, low and change run over `window` — the
+// range actually asked for — so a question about the 52-week high gets the
+// 52-week high rather than whatever the extra lookback happened to contain.
+function indicators(full, window) {
+  const closes = full.map((c) => c.close);
+  const volumes = full.map((c) => c.volume);
   const ema12 = ema(closes, 12);
   const ema26 = ema(closes, 26);
   const macdLine = ema12 !== null && ema26 !== null ? ema12 - ema26 : null;
+  const last = closes[closes.length - 1];
+  const windowOpen = window[0].close;
 
   return {
-    lastClose: round(closes[closes.length - 1]),
-    changeFromFirst: round(closes[closes.length - 1] - closes[0]),
-    changePercentFromFirst: round(((closes[closes.length - 1] - closes[0]) / closes[0]) * 100),
+    lastClose: round(last),
+    changeOverRange: round(last - windowOpen),
+    changePercentOverRange: round(((last - windowOpen) / windowOpen) * 100),
     sma20: round(sma(closes, 20)),
     sma50: round(sma(closes, 50)),
+    sma100: round(sma(closes, 100)),
     sma200: round(sma(closes, 200)),
+    sma250: round(sma(closes, 250)),
     ema9: round(ema(closes, 9)),
     ema21: round(ema(closes, 21)),
     macd: round(macdLine, 3),
     rsi14: round(rsi(closes, 14), 1),
-    atr14: round(atr(candles, 14), 3),
-    periodHigh: round(Math.max(...candles.map((c) => c.high))),
-    periodLow: round(Math.min(...candles.map((c) => c.low))),
+    atr14: round(atr(full, 14), 3),
+    rangeHigh: round(Math.max(...window.map((c) => c.high))),
+    rangeLow: round(Math.min(...window.map((c) => c.low))),
     avgVolume20: volumes.length >= 20 ? Math.round(sma(volumes, 20)) : null,
     lastVolume: volumes[volumes.length - 1],
   };
@@ -375,17 +418,17 @@ function buildServer() {
     {
       title: 'Get price history candles',
       description:
-        'Get OHLCV candles for a stock symbol, plus precomputed indicators (SMA 20/50/200, EMA 9/21, ' +
-        'MACD line, RSI 14, ATR 14, period high/low, average volume). Call this for any charting, trend, ' +
-        'candlestick-pattern, support/resistance, momentum or moving-average question — the data is live ' +
-        'and cannot be answered from memory. Use the returned indicators rather than recomputing them by ' +
-        'hand. Intraday intervals only work with a range in days.',
+        'Get OHLCV candles for a stock symbol, plus precomputed indicators (SMA 20/50/100/200/250, ' +
+        'EMA 9/21, MACD line, RSI 14, ATR 14, range high/low, average volume). Call this for any ' +
+        'charting, trend, candlestick-pattern, support/resistance, momentum or moving-average question — ' +
+        'the data is live and cannot be answered from memory. Use the returned indicators rather than ' +
+        'recomputing them by hand. Intraday intervals only work with a range in days.',
       inputSchema: {
         symbol: z.string().describe('Stock ticker, e.g. NVDA'),
         range: z
           .enum(Object.keys(RANGES))
           .optional()
-          .describe('How far back to look. Defaults to 6m.'),
+          .describe(`How far back to look. Defaults to ${DEFAULT_RANGE}.`),
         interval: z
           .enum(Object.keys(INTERVALS))
           .optional()
@@ -404,18 +447,24 @@ function buildServer() {
           .max(1200)
           .optional()
           .describe(
-            `Cap on candles returned, keeping the most recent. Defaults to ${DEFAULT_MAX_CANDLES}. ` +
-              'Indicators are always computed on the full series, not just the returned slice.'
+            `Cap on candles listed, keeping the most recent. Defaults to ${DEFAULT_MAX_CANDLES}; raise ` +
+              'it to read a long daily range bar by bar. Indicators never depend on this — they are ' +
+              'computed over the full series regardless.'
           ),
       },
     },
     async ({ symbol, range, interval, extendedHours, maxCandles }) => {
       try {
         const ticker = symbol.toUpperCase();
-        const rangeKey = range || '6m';
-        let { periodType, period } = RANGES[rangeKey];
-        const intervalKey = interval || defaultInterval(periodType, period);
+        const rangeKey = range || DEFAULT_RANGE;
+        const asked = RANGES[rangeKey];
+        const intervalKey = interval || defaultInterval(asked.periodType);
         const { frequencyType, frequency } = INTERVALS[intervalKey];
+
+        // What actually gets requested from Schwab, which may reach back
+        // further than the caller asked for. The reported window is cut back
+        // down afterwards.
+        let { periodType, period } = asked;
 
         // "The last five days, daily candles" is an ordinary request that Schwab
         // has no parameters for — a day-range only serves minute bars. Pull a
@@ -426,6 +475,15 @@ function buildServer() {
           sessionCap = period;
           periodType = 'month';
           period = 1;
+        }
+
+        // A 250-day average over a one-year range would rest on a couple of
+        // bars, or fall out entirely on a short trading year. Reach back far
+        // enough to seed the long averages properly; only the candles inside
+        // the requested range are reported.
+        if (frequencyType === 'daily' && approxDailyBars(periodType, period) < LONGEST_AVERAGE + 20) {
+          periodType = 'year';
+          period = 2;
         }
 
         if (!LEGAL[periodType].includes(frequencyType)) {
@@ -456,13 +514,22 @@ function buildServer() {
           );
         }
 
-        // Indicators run on everything Schwab sent; only the printed rows are
-        // trimmed, so a 200-day average survives a short candle window.
-        const stats = indicators(candles);
+        // The candles inside the range that was actually asked for. Sessions
+        // are counted for day-length ranges and cut by date for the rest.
+        const cutoff = windowStart(asked.periodType, asked.period, candles[candles.length - 1].datetime);
+        const window = sessionCap
+          ? candles.slice(-sessionCap)
+          : cutoff
+            ? candles.filter((c) => c.datetime >= cutoff)
+            : candles;
+        const inRange = window.length ? window : candles;
+
+        // Moving averages read the whole series so the long ones are properly
+        // seeded; highs, lows and the change read only the requested range.
+        const stats = indicators(candles, inRange);
         const intraday = frequencyType === 'minute';
-        const shown = candles.slice(
-          -Math.min(maxCandles || DEFAULT_MAX_CANDLES, sessionCap || Infinity)
-        );
+        const shown = inRange.slice(-(maxCandles || DEFAULT_MAX_CANDLES));
+        const reachedBack = candles.length > inRange.length;
 
         return textResult({
           symbol: ticker,
@@ -470,14 +537,19 @@ function buildServer() {
           interval: intervalKey,
           extendedHours: Boolean(extendedHours),
           previousClose: data.previousClose,
-          candlesReturned: shown.length,
-          candlesAvailable: candles.length,
+          candlesInRange: inRange.length,
+          candlesListed: shown.length,
+          candlesFetched: candles.length,
           indicators: stats,
           indicatorNote: [
-            `Computed over all ${candles.length} ${intervalKey} candles Schwab returned.`,
-            sessionCap
-              ? `That reaches back further than the ${rangeKey} listed below, because moving averages ` +
-                'need the history — treat only the listed candles as the recent action.'
+            `Moving averages, RSI and ATR are computed over all ${candles.length} ${intervalKey} candles fetched.`,
+            reachedBack
+              ? `That deliberately reaches back past the ${rangeKey} asked for, so the long averages are ` +
+                `properly seeded; rangeHigh, rangeLow and the change cover the ${rangeKey} itself.`
+              : null,
+            shown.length < inRange.length
+              ? `Only the most recent ${shown.length} of ${inRange.length} candles in range are listed; ` +
+                'raise maxCandles to see the rest.'
               : null,
             'Prices are live from Schwab and may be delayed or stale outside market hours.',
           ]
