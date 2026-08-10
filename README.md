@@ -70,15 +70,38 @@ If the connector asks you to sign in and the sign-in fails, the URL is wrong —
 the server uses no OAuth, so Claude should never prompt for a login.
 
 Then just ask, in any conversation: *"What's the best NVDA strike expiring this
-week?"* Claude calls the connector, pulls the live chain, and reasons over the
-actual numbers.
+week?"* or *"Is NVDA overbought? Show me the daily chart for the last 6 months."*
+Claude calls the connector, pulls the live data, and reasons over the actual
+numbers.
 
-Two tools are exposed:
+Three tools are exposed:
 
 | Tool | What it does |
 |---|---|
 | `list_expirations` | Expiration dates for a symbol, with days to expiry and strike counts |
 | `get_options_chain` | Strikes around the money for one expiration — bid, ask, last, delta, gamma, theta, vega, IV, open interest, volume, both sides |
+| `get_price_history` | OHLCV candles plus SMA 20/50/200, EMA 9/21, MACD, RSI 14, ATR 14, period high/low and average volume |
+
+### Price history ranges and intervals
+
+`get_price_history` takes one `range` and one `interval`. Schwab won't serve
+every pairing, so the tool rejects impossible ones up front with the list of
+intervals that do work:
+
+| Range | Intervals allowed |
+|---|---|
+| `1d` `2d` `3d` `5d` `10d` | `1min` `5min` `10min` `15min` `30min` |
+| `1m` `2m` `3m` `6m` `ytd` | `daily` `weekly` |
+| `1y` `2y` `3y` `5y` `10y` | `daily` `weekly` `monthly` |
+
+Both are optional — the default is 6 months of daily candles. Schwab only keeps
+intraday history for roughly the last several weeks, so minute candles from
+months ago come back empty.
+
+The indicators are computed on the server over the **full** series Schwab
+returns, even when `maxCandles` trims the printed rows, so a 200-day average
+stays correct on a short window. That is deliberate: it keeps Claude reading
+numbers rather than doing long arithmetic in its head.
 
 Treat the secret like a password: anyone holding that URL can pull chains
 against your Schwab connection.
