@@ -31,7 +31,7 @@
   }
   .header {
     max-width: 1100px;
-    margin: 0 auto 20px;
+    margin: 0 auto 16px;
     display: flex;
     align-items: baseline;
     gap: 16px;
@@ -77,6 +77,62 @@
     text-transform: uppercase;
     letter-spacing: 1px;
   }
+  .controls-row {
+    max-width: 1100px;
+    margin: 0 auto 14px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .select {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 12.5px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+  .col-dropdown { position: relative; }
+  .col-btn {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 12.5px;
+    font-weight: 600;
+    padding: 8px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+  .col-btn:hover { background: #182034; }
+  .col-menu {
+    display: none;
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 10px 14px;
+    z-index: 20;
+    min-width: 150px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  }
+  .col-menu.open { display: block; }
+  .col-menu label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    padding: 5px 0;
+    cursor: pointer;
+    user-select: none;
+  }
+  .col-menu input { accent-color: var(--atm); cursor: pointer; }
   .exp-tabs {
     max-width: 1100px;
     margin: 0 auto 14px;
@@ -93,6 +149,7 @@
     padding: 6px 12px;
     border-radius: 6px;
     cursor: pointer;
+    white-space: nowrap;
   }
   .exp-tab.active {
     color: var(--atm);
@@ -105,6 +162,11 @@
     border: 1px solid var(--line);
     border-radius: 10px;
     overflow: hidden;
+  }
+  .table-scroll {
+    overflow-x: auto;
+    max-height: 70vh;
+    overflow-y: auto;
   }
   table {
     width: 100%;
@@ -121,6 +183,9 @@
     font-weight: 600;
     padding: 10px 8px;
     border-bottom: 1px solid var(--line);
+    background: var(--panel);
+    position: sticky;
+    top: 0;
   }
   thead .side-call { color: var(--call); text-align: right; }
   thead .side-put { color: var(--put); text-align: left; }
@@ -147,8 +212,7 @@
   tr.put-itm .put-cell { background: var(--put-itm); }
   .bid { color: var(--dim); }
   .last { color: var(--text); font-weight: 600; }
-  .delta { color: var(--dim); font-size: 11px; }
-  .iv { color: var(--dim); font-size: 11px; }
+  .greek { color: var(--dim); font-size: 11px; }
   .empty, .loading {
     text-align: center;
     padding: 60px 20px;
@@ -167,7 +231,7 @@
     font-family: var(--mono);
     font-size: 13px;
   }
-  ::-webkit-scrollbar { height: 6px; }
+  ::-webkit-scrollbar { height: 6px; width: 6px; }
 </style>
 </head>
 <body>
@@ -181,35 +245,53 @@
     </div>
   </div>
 
+  <div class="controls-row">
+    <select class="select" id="expSelect" onchange="onExpSelectChange(this.value)"></select>
+
+    <div class="col-dropdown">
+      <button class="col-btn" id="colBtn" onclick="toggleColMenu()">Columns ▾</button>
+      <div class="col-menu" id="colMenu">
+        <label><input type="checkbox" data-col="iv" checked onchange="onColToggle(this)"> IV%</label>
+        <label><input type="checkbox" data-col="delta" checked onchange="onColToggle(this)"> Delta</label>
+        <label><input type="checkbox" data-col="theta" onchange="onColToggle(this)"> Theta</label>
+        <label><input type="checkbox" data-col="vega" onchange="onColToggle(this)"> Vega</label>
+      </div>
+    </div>
+  </div>
+
   <div class="exp-tabs" id="expTabs"></div>
 
   <div class="chain-wrap">
-    <table id="chainTable" style="display:none;">
-      <thead>
-        <tr>
-          <th class="side-call" colspan="4">Calls</th>
-          <th class="strike-hdr">Strike</th>
-          <th class="side-put" colspan="4">Puts</th>
-        </tr>
-        <tr>
-          <th class="side-call">IV</th>
-          <th class="side-call">Δ</th>
-          <th class="side-call">Bid</th>
-          <th class="side-call">Last</th>
-          <th class="strike-hdr"></th>
-          <th class="side-put">Last</th>
-          <th class="side-put">Bid</th>
-          <th class="side-put">Δ</th>
-          <th class="side-put">IV</th>
-        </tr>
-      </thead>
-      <tbody id="chainBody"></tbody>
-    </table>
+    <div class="table-scroll">
+      <table id="chainTable" style="display:none;">
+        <thead id="chainHead"></thead>
+        <tbody id="chainBody"></tbody>
+      </table>
+    </div>
     <div class="loading" id="statusMsg">Enter a symbol and hit Load Chain.</div>
   </div>
 
   <script>
     let fullData = null;
+    let expDates = [];
+    let currentExp = null;
+    const columns = { iv: true, delta: true, theta: false, vega: false };
+    const COL_LABEL = { iv: 'IV', delta: 'Δ', theta: 'Θ', vega: 'V' };
+
+    function toggleColMenu() {
+      document.getElementById('colMenu').classList.toggle('open');
+    }
+    document.addEventListener('click', (e) => {
+      const menu = document.getElementById('colMenu');
+      const btn = document.getElementById('colBtn');
+      if (menu.classList.contains('open') && !menu.contains(e.target) && e.target !== btn) {
+        menu.classList.remove('open');
+      }
+    });
+    function onColToggle(input) {
+      columns[input.dataset.col] = input.checked;
+      if (currentExp) renderChain(currentExp);
+    }
 
     async function loadChain() {
       const symbol = document.getElementById('symbolInput').value.trim().toUpperCase();
@@ -221,6 +303,7 @@
       statusMsg.style.display = 'block';
       statusMsg.textContent = `Loading ${symbol}...`;
       document.getElementById('expTabs').innerHTML = '';
+      document.getElementById('expSelect').innerHTML = '';
 
       try {
         const res = await fetch(`/.netlify/functions/schwab-options-chain?symbol=${encodeURIComponent(symbol)}`);
@@ -236,40 +319,94 @@
           data.underlyingPrice ? '$' + data.underlyingPrice.toFixed(2) : '—';
         document.getElementById('underlyingLbl').textContent = symbol;
 
-        const expDates = Object.keys(data.callExpDateMap || {});
+        expDates = Object.keys(data.callExpDateMap || {});
         if (!expDates.length) {
           statusMsg.textContent = 'No expirations returned for this symbol.';
           return;
         }
-        renderExpTabs(expDates);
+        renderExpControls(expDates);
         renderChain(expDates[0]);
       } catch (err) {
         statusMsg.textContent = 'Request failed: ' + err.message;
       }
     }
 
-    function renderExpTabs(expDates) {
+    function expLabel(exp) {
+      const [date, dte] = exp.split(':');
+      return dte !== undefined ? `${date} (${dte}d)` : date;
+    }
+
+    function renderExpControls(dates) {
       const tabsEl = document.getElementById('expTabs');
+      const selectEl = document.getElementById('expSelect');
       tabsEl.innerHTML = '';
-      expDates.forEach((exp, i) => {
-        const label = exp.split(':')[0];
+      selectEl.innerHTML = '';
+
+      dates.forEach((exp, i) => {
         const btn = document.createElement('button');
         btn.className = 'exp-tab' + (i === 0 ? ' active' : '');
-        btn.textContent = label;
-        btn.onclick = () => {
-          document.querySelectorAll('.exp-tab').forEach(t => t.classList.remove('active'));
-          btn.classList.add('active');
-          renderChain(exp);
-        };
+        btn.textContent = expLabel(exp);
+        btn.onclick = () => selectExp(exp);
+        btn.dataset.exp = exp;
         tabsEl.appendChild(btn);
+
+        const opt = document.createElement('option');
+        opt.value = exp;
+        opt.textContent = expLabel(exp);
+        selectEl.appendChild(opt);
       });
+    }
+
+    function onExpSelectChange(exp) {
+      selectExp(exp);
+    }
+
+    function selectExp(exp) {
+      document.querySelectorAll('.exp-tab').forEach(t => {
+        t.classList.toggle('active', t.dataset.exp === exp);
+      });
+      document.getElementById('expSelect').value = exp;
+      renderChain(exp);
     }
 
     function fmt(n, d = 2) {
       return (n === undefined || n === null) ? '—' : Number(n).toFixed(d);
     }
 
+    function activeCols() {
+      return Object.keys(columns).filter(c => columns[c]);
+    }
+
+    function renderHead() {
+      const head = document.getElementById('chainHead');
+      const cols = activeCols();
+      const callCols = cols.map(c => `<th class="side-call">${COL_LABEL[c]}</th>`).join('');
+      const putCols = cols.slice().reverse().map(c => `<th class="side-put">${COL_LABEL[c]}</th>`).join('');
+      head.innerHTML = `
+        <tr>
+          <th class="side-call" colspan="${cols.length + 2}">Calls</th>
+          <th class="strike-hdr">Strike</th>
+          <th class="side-put" colspan="${cols.length + 2}">Puts</th>
+        </tr>
+        <tr>
+          ${callCols}
+          <th class="side-call">Bid</th>
+          <th class="side-call">Last</th>
+          <th class="strike-hdr"></th>
+          <th class="side-put">Last</th>
+          <th class="side-put">Bid</th>
+          ${putCols}
+        </tr>
+      `;
+    }
+
+    function greekCell(contract, col) {
+      if (col === 'iv') return contract ? fmt(contract.volatility, 0) + '%' : '—';
+      return contract ? fmt(contract[col]) : '—';
+    }
+
     function renderChain(expKey) {
+      currentExp = expKey;
       const statusMsg = document.getElementById('statusMsg');
       const table = document.getElementById('chainTable');
       const body = document.getElementById('chainBody');
@@ -286,8 +423,11 @@
         return;
       }
 
+      renderHead();
+      const cols = activeCols();
+
       strikes.forEach(strike => {
-        const strikeKey = strikes.find(() => true) !== undefined ? String(strike.toFixed(1)) : null;
+        const strikeKey = strike.toFixed(1);
         const c = (calls[strikeKey] || calls[String(strike)] || [])[0];
         const p = (puts[strikeKey] || puts[String(strike)] || [])[0];
 
@@ -300,16 +440,21 @@
         if (callItm) tr.classList.add('call-itm');
         if (putItm) tr.classList.add('put-itm');
 
+        const callGreekCells = cols.map(col =>
+          `<td class="call-cell greek">${greekCell(c, col)}</td>`
+        ).join('');
+        const putGreekCells = cols.slice().reverse().map(col =>
+          `<td class="put-cell greek" style="text-align:left;">${greekCell(p, col)}</td>`
+        ).join('');
+
         tr.innerHTML = `
-          <td class="call-cell iv">${c ? fmt(c.volatility, 0) + '%' : '—'}</td>
-          <td class="call-cell delta">${c ? fmt(c.delta) : '—'}</td>
+          ${callGreekCells}
           <td class="call-cell bid">${c ? fmt(c.bid) : '—'}</td>
           <td class="call-cell last">${c ? fmt(c.last) : '—'}</td>
           <td class="strike-cell">${strike.toFixed(strike % 1 === 0 ? 0 : 2)}</td>
           <td class="put-cell last" style="text-align:left;">${p ? fmt(p.last) : '—'}</td>
           <td class="put-cell bid" style="text-align:left;">${p ? fmt(p.bid) : '—'}</td>
-          <td class="put-cell delta" style="text-align:left;">${p ? fmt(p.delta) : '—'}</td>
-          <td class="put-cell iv" style="text-align:left;">${p ? fmt(p.volatility, 0) + '%' : '—'}</td>
+          ${putGreekCells}
         `;
         body.appendChild(tr);
       });
@@ -317,7 +462,6 @@
       statusMsg.style.display = 'none';
       table.style.display = 'table';
 
-      // scroll ATM row into view
       requestAnimationFrame(() => {
         const atmRow = body.querySelector('tr.atm');
         if (atmRow) atmRow.scrollIntoView({ block: 'center' });
