@@ -31,6 +31,43 @@ saved in Netlify Blobs — no manual copying of codes ever again.
 https://YOUR-SITE.netlify.app/.netlify/functions/schwab-options-chain?symbol=NVDA
 ```
 
+## 6. Let Claude read the chain directly (MCP connector)
+
+This site ships an MCP server, so Claude can pull your live chain itself instead
+of you pasting it in. It runs through your Claude subscription — no API key, no
+per-request cost.
+
+**Set the secret.** In Netlify → Site configuration → Environment variables, add
+`MCP_SHARED_SECRET` set to any long random string. Generate one with:
+
+```
+openssl rand -hex 24
+```
+
+Redeploy. Until this is set the endpoint returns 503 and serves nothing — it is
+gated because it exposes Schwab-authenticated data.
+
+**Add the connector.** In claude.ai → Settings → Connectors → Add custom
+connector, paste:
+
+```
+https://YOUR-SITE.netlify.app/mcp?key=YOUR_SECRET
+```
+
+Then just ask, in any conversation: *"What's the best NVDA strike expiring this
+week?"* Claude calls the connector, pulls the live chain, and reasons over the
+actual numbers.
+
+Two tools are exposed:
+
+| Tool | What it does |
+|---|---|
+| `list_expirations` | Expiration dates for a symbol, with days to expiry and strike counts |
+| `get_options_chain` | Strikes around the money for one expiration — bid, ask, last, delta, gamma, theta, vega, IV, open interest, volume, both sides |
+
+Treat the secret like a password: anyone holding that URL can pull chains
+against your Schwab connection.
+
 ## Re-authing (~weekly)
 Schwab's refresh token expires after about 7 days no matter what. If a call
 returns 401 with "Login expired," just revisit `schwab-auth-start` and log
