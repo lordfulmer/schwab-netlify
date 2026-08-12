@@ -74,7 +74,7 @@ week?"*, *"Is NVDA overbought? Show me the daily chart for the last 6 months."*,
 or *"Scan my watchlist for anything above its 200-day."* Claude calls the
 connector, pulls the live data, and reasons over the actual numbers.
 
-Five tools are exposed:
+Six tools are exposed:
 
 | Tool | What it does |
 |---|---|
@@ -83,6 +83,7 @@ Five tools are exposed:
 | `get_price_history` | OHLCV candles plus SMA 20/50/100/200/250, EMA 9/21, MACD, RSI 14, ATR 14, range high/low and average volume |
 | `get_quote` | Fast live bid/ask/last/mark for one or more symbols at once, plus day range, previous close, 52-week high/low and volume |
 | `scan_watchlist` | The same moving-average and RSI read as `get_price_history`, compressed into one summary row per symbol, for up to 15 symbols at once |
+| `get_watchlists` | The symbols in your actual saved Schwab watchlists — feeds `scan_watchlist`/`get_quote` when you say "my watchlist" instead of naming tickers |
 
 ### Price history ranges and intervals
 
@@ -145,6 +146,28 @@ Netlify's function time limit. One consequence worth knowing: `get_quote` and
 calls at once. The token manager already handles that — concurrent callers
 share a single in-flight refresh rather than each firing their own — so this
 doesn't need anything from you, but it's why that logic exists.
+
+### `get_watchlists`
+
+Reads your actual saved watchlist(s) from Schwab — not just a symbol list you
+type in. Say *"scan my watchlist"* and Claude calls this first to get the real
+symbols, then feeds them into `scan_watchlist` or `get_quote`.
+
+This one needs more than the market data access the other five tools use.
+Watchlists live under Schwab's **Trader API**, a separate product from Market
+Data:
+
+1. In the [Schwab Developer Portal](https://developer.schwab.com), open your
+   app and enable **Trader API - Individual** (Market Data alone won't expose
+   `/trader/v1/...` endpoints — that's what causes the 401/403 this tool
+   explains if it's missing).
+2. If that access is new since your last login, revisit
+   `schwab-auth-start` and log in again so the new scope actually gets
+   consented to. An old token doesn't retroactively pick up new permissions.
+
+Account numbers never appear in the tool's output — only an index like
+"Account 1" — since there's no reason that identifier needs to reach a chat
+transcript. Symbols are all it returns.
 
 Treat the secret like a password: anyone holding that URL can pull chains
 against your Schwab connection.

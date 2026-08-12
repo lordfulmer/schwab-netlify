@@ -32,17 +32,34 @@ const DEFAULT_RANGE = '1y';
 // bars, so the fetch is widened to cover it — see widenForAverages below.
 const LONGEST_AVERAGE = 250;
 
-async function schwabGet(path, params) {
+// Carries the HTTP status alongside the message so callers can tell "Trader
+// API isn't enabled for this app yet" (401/403) apart from an ordinary
+// transport failure, without parsing the message text to find out.
+class SchwabHttpError extends Error {
+  constructor(status, bodyText) {
+    super(`Schwab returned ${status}: ${bodyText.slice(0, 300)}`);
+    this.status = status;
+  }
+}
+
+// Schwab splits its API in two: marketdata (quotes, chains, history — what
+// this app used until now) and trader (accounts, watchlists, orders — needs
+// a separate "Trader API" product grant in the Developer Portal). Same auth,
+// different base path.
+async function schwabFetch(base, path, params) {
   const accessToken = await getValidAccessToken();
-  const query = new URLSearchParams(params).toString();
-  const url = `https://api.schwabapi.com/marketdata/v1/${path}?${query}`;
+  const query = params ? `?${new URLSearchParams(params).toString()}` : '';
+  const url = `https://api.schwabapi.com/${base}/v1/${path}${query}`;
   const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
 
   if (!res.ok) {
-    throw new Error(`Schwab returned ${res.status}: ${(await res.text()).slice(0, 300)}`);
+    throw new SchwabHttpError(res.status, await res.text());
   }
   return res.json();
 }
+
+const schwabGet = (path, params) => schwabFetch('marketdata', path, params);
+const schwabTrader = (path) => schwabFetch('trader', path);
 
 const fetchChain = (symbol) => schwabGet('chains', { symbol });
 
@@ -696,7 +713,9 @@ function buildServer() {
         'high/low, and a simple trend label. Call this when the person wants to screen several tickers at ' +
         'once instead of one at a time, e.g. "which of these are above their 200-day" or "scan my ' +
         'watchlist for RSI over 70". Up to 15 symbols per call; for one symbol use get_price_history ' +
-        'instead, which also returns the underlying candles.',
+        'instead, which also returns the underlying candles. This tool only knows the symbols it is given — ' +
+        'if the person says "my watchlist" rather than naming tickers, call get_watchlists first to get ' +
+        'the actual symbols, then pass those here.',
       inputSchema: {
         symbols: z.array(z.string()).min(1).max(15).describe('Tickers to scan, e.g. ["NVDA", "AAPL", "MSFT"].'),
         range: z
@@ -762,6 +781,84 @@ function buildServer() {
           'Live from Schwab. Prices may be delayed or stale outside market hours. trend compares last ' +
           'close against SMA50 and SMA200 — a quick starting point, not a signal.',
       });
+    }
+  );
+
+  server.registerTool(
+    'get_watchlists',
+    {
+      title: 'List saved Schwab watchlists',
+      description:
+        'List the watchlists saved on the connected Schwab account(s) and the symbols in each. Call this ' +
+        'first when the person refers to "my watchlist" or "my list" rather than naming symbols, then pass ' +
+        'the symbols it returns into scan_watchlist, get_quote or get_price_history. Needs the Trader API ' +
+        'product enabled for this app in the Schwab Developer Portal, separate from market data access — ' +
+        'if that has not been done, this returns a clear explanation rather than a bare failure.',
+      inputSchema: {},
+    },
+    async () => {
+      try {
+        const accounts = await schwabTrader('accounts/accountNumbers');
+        if (!Array.isArray(accounts) || !accounts.length) {
+          return errorResult(
+            'No linked Schwab accounts found. Make sure an account is linked to this app in the Schwab ' +
+              'Developer Portal.'
+          );
+        }
+
+        // Account numbers never leave this function — only an index, since
+        // there is no reason for that identifier to reach a chat transcript.
+        const perAccount = await Promise.all(
+          accounts.map(async (acct, i) => {
+            const account = `Account ${i + 1}`;
+            try {
+              const watchlists = await schwabTrader(`accounts/${encodeURIComponent(acct.hashValue)}/watchlists`);
+              return {
+                account,
+                watchlists: (Array.isArray(watchlists) ? watchlists : []).map((w) => ({
+                  name: w.name || w.watchlistId || 'Untitled',
+                  watchlistId: w.watchlistId,
+                  symbols: (w.watchlistItems || [])
+                    .map((item) => (item.instrument && item.instrument.symbol) || item.symbol)
+                    .filter(Boolean),
+                })),
+              };
+            } catch (err) {
+              return { account, error: err.message.slice(0, 200) };
+            }
+          })
+        );
+
+        const totalWatchlists = perAccount.reduce((n, a) => n + (a.watchlists ? a.watchlists.length : 0), 0);
+        if (!totalWatchlists) {
+          return errorResult(
+            'No watchlists came back for any linked account. Either none exist yet in Schwab, or this ' +
+              'app does not have Trader API access — check "Trader API - Individual" is enabled for your ' +
+              'app in the Schwab Developer Portal, then reconnect via /.netlify/functions/schwab-auth-start.'
+          );
+        }
+
+        return textResult({
+          accounts: perAccount,
+          note:
+            'Account numbers are withheld, only an index is shown. Use the symbols from a watchlist with ' +
+            'get_quote, get_price_history or scan_watchlist.',
+        });
+      } catch (err) {
+        if (err.message && err.message.startsWith('REAUTH_REQUIRED')) {
+          return errorResult(
+            'The Schwab login has expired. Visit /.netlify/functions/schwab-auth-start on the site to reconnect, then try again.'
+          );
+        }
+        if (err instanceof SchwabHttpError && (err.status === 401 || err.status === 403)) {
+          return errorResult(
+            'Schwab refused this request. This usually means Trader API access is not enabled for this ' +
+              'app yet, or the current login predates that scope. Enable "Trader API - Individual" for ' +
+              'your app in the Schwab Developer Portal, then reconnect via /.netlify/functions/schwab-auth-start.'
+          );
+        }
+        return errorResult(`Could not fetch watchlists: ${err.message}`);
+      }
     }
   );
 
