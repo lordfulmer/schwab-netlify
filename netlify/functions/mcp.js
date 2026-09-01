@@ -369,15 +369,44 @@ function trendLabel(stats) {
 // and it reads like a real (wildly wrong) number.
 const noSentinel = (v) => (v === undefined || v === null || v === -999 ? null : v);
 
+// Schwab keys the quotes response by symbol — except a continuous futures
+// root ("/ES") can come back keyed by the resolved contract ("/ESZ26")
+// instead of the symbol that was actually requested. A plain data[ticker]
+// lookup misses that entirely and reads as "no data" even though Schwab
+// answered. Try the exact key, then a case-insensitive match, then — only
+// when exactly one symbol was asked for — whatever single entry came back,
+// since there's no ambiguity about which request it answers.
+function resolveQuoteEntry(data, ticker, symbolCount) {
+  if (data[ticker]) return data[ticker];
+  const upper = ticker.toUpperCase();
+  const caseInsensitive = Object.keys(data).find((k) => k.toUpperCase() === upper);
+  if (caseInsensitive) return data[caseInsensitive];
+  const keys = Object.keys(data);
+  if (symbolCount === 1 && keys.length === 1) return data[keys[0]];
+  return null;
+}
+
 function formatQuote(ticker, entry) {
   if (!entry || entry.invalid || !entry.quote) {
-    return { symbol: ticker, error: 'No quote returned — check the symbol.' };
+    return {
+      symbol: ticker,
+      error:
+        ticker.startsWith('/')
+          ? 'No quote returned. A continuous futures root sometimes needs the specific contract instead, ' +
+            'e.g. /ESZ26 rather than /ES — check the symbol.'
+          : 'No quote returned — check the symbol.',
+    };
   }
   const q = entry.quote;
   const ref = entry.reference || {};
 
   return {
     symbol: ticker,
+    // Schwab resolves a continuous futures root to the actual contract
+    // traded; surface that so "quoted /ES" doesn't read as if /ES itself
+    // were a tradeable instrument.
+    resolvedSymbol: entry.symbol && entry.symbol !== ticker ? entry.symbol : null,
+    assetType: entry.assetMainType || null,
     description: ref.description || null,
     exchange: ref.exchangeName || q.exchangeName || null,
     last: noSentinel(q.lastPrice),
@@ -387,13 +416,17 @@ function formatQuote(ticker, entry) {
     ask: noSentinel(q.askPrice),
     askSize: q.askSize ?? null,
     netChange: noSentinel(q.netChange),
-    netPercentChange: noSentinel(q.netPercentChange),
+    // Equities report percent change as netPercentChange; futures report it
+    // as futurePercentChange. Whichever the asset type actually sent wins.
+    netPercentChange: noSentinel(q.netPercentChange ?? q.futurePercentChange),
     open: noSentinel(q.openPrice),
     dayHigh: noSentinel(q.highPrice),
     dayLow: noSentinel(q.lowPrice),
     previousClose: noSentinel(q.closePrice),
     week52High: noSentinel(q['52WeekHigh']),
     week52Low: noSentinel(q['52WeekLow']),
+    // Futures-only; stays null for every other asset type.
+    openInterest: q.openInterest ?? null,
     volume: q.totalVolume ?? null,
     quoteTime: q.quoteTime ? stamp(q.quoteTime, true) : null,
     securityStatus: q.securityStatus || null,
@@ -669,21 +702,27 @@ function buildServer() {
     {
       title: 'Get a live quote',
       description:
-        'Get a real-time bid/ask/last/mark quote for one or more stock symbols, plus day range, previous ' +
-        'close, 52-week high/low and volume. Call this for a fast price check that does not need the ' +
-        'full options chain or price history — e.g. "what is NVDA trading at" or "quote AAPL and MSFT". ' +
-        'Reflects the last trade when the market is closed.',
+        'Get a real-time bid/ask/last/mark quote for one or more symbols, plus day range, previous close, ' +
+        'volume, and (for stocks) 52-week high/low or (for futures) open interest. Call this for a fast ' +
+        'price check that does not need the full options chain or price history — e.g. "what is NVDA ' +
+        'trading at" or "quote AAPL and MSFT". Also covers futures — use a leading slash and the specific ' +
+        'contract month, e.g. "/ESZ26" (S&P 500), "/NQZ26" (Nasdaq), "/CLZ26" (crude oil), "/GCZ26" ' +
+        '(gold); a bare continuous root like "/ES" often will not resolve. Reflects the last trade when ' +
+        'the market is closed.',
       inputSchema: {
         symbols: z
           .union([z.string(), z.array(z.string()).min(1).max(20)])
-          .describe('One ticker or an array of up to 20, e.g. "NVDA" or ["NVDA", "AAPL", "MSFT"].'),
+          .describe(
+            'One ticker or an array of up to 20, e.g. "NVDA" or ["NVDA", "AAPL", "/ESZ26"]. Futures need ' +
+              'the leading slash and contract month.'
+          ),
       },
     },
     async ({ symbols }) => {
       try {
         const tickers = [...new Set((Array.isArray(symbols) ? symbols : [symbols]).map((s) => s.toUpperCase()))];
         const data = await schwabGet('quotes', { symbols: tickers.join(','), fields: 'quote,reference' });
-        const quotes = tickers.map((t) => formatQuote(t, data[t]));
+        const quotes = tickers.map((t) => formatQuote(t, resolveQuoteEntry(data, t, tickers.length)));
         const missing = quotes.filter((q) => q.error).map((q) => q.symbol);
 
         return textResult({

@@ -131,6 +131,23 @@ questions that don't need a chain or a chart. A symbol Schwab doesn't
 recognize shows up as an `error` row rather than failing the whole call, so one
 typo in a batch doesn't cost you the rest.
 
+**Futures work too** — use a leading slash and the specific contract month,
+e.g. `/ESZ26` (S&P 500), `/NQZ26` (Nasdaq), `/CLZ26` (crude oil), `/GCZ26`
+(gold). A bare continuous root like `/ES` often won't resolve on its own; when
+it does, Schwab answers under the actual contract symbol rather than the root
+you asked for, so the response includes `resolvedSymbol` when that happens.
+Futures report `openInterest` instead of a 52-week range, and their percent
+change comes from a different field than a stock's (`futurePercentChange` vs
+`netPercentChange`) — both are normalized into the same `netPercentChange` and
+`openInterest` fields in the response either way, so nothing downstream needs
+to know which asset type it's looking at.
+
+One resolution limit worth knowing: if a continuous root is requested
+*alongside* other symbols in the same call and Schwab renames it, there's no
+way to tell which returned entry belongs to which request, so it comes back
+as a "check the symbol" error instead of a guess. Quote it on its own, or use
+the specific contract month, and it resolves cleanly either way.
+
 ### `scan_watchlist`
 
 Same indicators as `get_price_history` (SMA 20/50/100/200/250, RSI, MACD,
