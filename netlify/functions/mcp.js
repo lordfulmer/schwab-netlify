@@ -44,7 +44,23 @@ async function schwabGet(path, params) {
   return res.json();
 }
 
-const fetchChain = (symbol) => schwabGet('chains', { symbol });
+// Always ask Schwab for a filtered chain. An unfiltered request returns every
+// strike of every expiration, and for a symbol like QQQ or SPY that response is
+// larger than Schwab's own gateway allows: it fails with 502 "Body buffer
+// overflow" (protocol.http.TooBigBody) before any data reaches us.
+const fetchChain = (symbol, filters = {}) => schwabGet('chains', { symbol, ...filters });
+
+// Expiration dates only, from the endpoint built for it. Returned as the same
+// "date:dte" keys the chain maps use, soonest first, expired dates dropped.
+async function fetchExpKeys(symbol) {
+  const data = await schwabGet('expirationchain', { symbol });
+  const keys = (data.expirationList || [])
+    .map((e) => ({ date: e.expirationDate || e.expiration, dte: e.daysToExpiration }))
+    .filter((e) => e.date && Number(e.dte) >= 0)
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .map((e) => `${String(e.date).slice(0, 10)}:${e.dte}`);
+  return [...new Set(keys)];
+}
 
 function textResult(payload) {
   return { content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }] };
@@ -391,7 +407,7 @@ function buildServer() {
     {
       title: 'List option expirations',
       description:
-        'List the available option expiration dates for a stock symbol, with days to expiry and strike counts. ' +
+        'List the available option expiration dates for a stock symbol, with days to expiry. ' +
         'Call this first when the person names a timeframe rather than an exact date ("this week", "next month", ' +
         'or no date at all) so you can pick the right expiration before pulling the chain.',
       inputSchema: {
@@ -400,18 +416,13 @@ function buildServer() {
     },
     async ({ symbol }) => {
       try {
-        const data = await fetchChain(symbol.toUpperCase());
-        const map = data.callExpDateMap || {};
-        const expirations = Object.keys(map).map((k) => ({
-          ...parseExp(k),
-          strikeCount: Object.keys(map[k]).length,
-        }));
+        const ticker = symbol.toUpperCase();
+        const expirations = (await fetchExpKeys(ticker)).map(parseExp);
+        if (!expirations.length) {
+          return errorResult(`No expirations returned for ${ticker}. Check the symbol.`);
+        }
 
-        return textResult({
-          symbol: symbol.toUpperCase(),
-          underlyingPrice: data.underlyingPrice,
-          expirations,
-        });
+        return textResult({ symbol: ticker, expirations });
       } catch (err) {
         return errorResult(`Could not list expirations: ${err.message}`);
       }
@@ -449,27 +460,38 @@ function buildServer() {
     async ({ symbol, expiration, strikesAroundMoney }) => {
       try {
         const ticker = symbol.toUpperCase();
-        const data = await fetchChain(ticker);
-        const callMap = data.callExpDateMap || {};
-        const putMap = data.putExpDateMap || {};
-        const expKeys = Object.keys(callMap);
+        const window = strikesAroundMoney || DEFAULT_WINDOW;
 
-        if (!expKeys.length) {
-          return errorResult(`No expirations returned for ${ticker}. Check the symbol.`);
+        // Accept either the bare date or the full "date:dte" key. With no date,
+        // look up the nearest expiration first, so the chain request can be
+        // filtered to one date.
+        let expDate = expiration ? expiration.split(':')[0] : null;
+        if (!expDate) {
+          const keys = await fetchExpKeys(ticker);
+          if (!keys.length) {
+            return errorResult(`No expirations returned for ${ticker}. Check the symbol.`);
+          }
+          expDate = keys[0].split(':')[0];
         }
 
-        // Accept either the bare date or the full "date:dte" key.
-        let expKey = expKeys[0];
-        if (expiration) {
-          const match = expKeys.find((k) => k === expiration || k.split(':')[0] === expiration);
-          if (!match) {
-            return errorResult(
-              `No expiration ${expiration} for ${ticker}. Available: ${expKeys
-                .map((k) => k.split(':')[0])
-                .join(', ')}`
-            );
-          }
-          expKey = match;
+        // One expiration, and only the strikes near the money (with a little
+        // slack; the exact window is cut below).
+        const data = await fetchChain(ticker, {
+          fromDate: expDate,
+          toDate: expDate,
+          strikeCount: String(window * 2 + 2),
+        });
+        const callMap = data.callExpDateMap || {};
+        const putMap = data.putExpDateMap || {};
+        const expKey = Object.keys(callMap).find((k) => k.split(':')[0] === expDate);
+
+        if (!expKey) {
+          const available = (await fetchExpKeys(ticker)).map((k) => k.split(':')[0]);
+          return errorResult(
+            available.length
+              ? `No expiration ${expDate} for ${ticker}. Available: ${available.join(', ')}`
+              : `No expirations returned for ${ticker}. Check the symbol.`
+          );
         }
 
         const calls = callMap[expKey] || {};
@@ -482,7 +504,6 @@ function buildServer() {
         all.forEach((s, i) => {
           if (Math.abs(s - underlying) < Math.abs(all[atmIdx] - underlying)) atmIdx = i;
         });
-        const window = strikesAroundMoney || DEFAULT_WINDOW;
         const strikes = all.slice(
           Math.max(0, atmIdx - window),
           Math.min(all.length, atmIdx + window + 1)
